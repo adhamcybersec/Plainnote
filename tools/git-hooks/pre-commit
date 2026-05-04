@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Plainnote pre-commit hook: enforce SPDX-License-Identifier on staged source files.
+#
+# Install once with:
+#     git config core.hooksPath tools/git-hooks
+#
+# Bypass once (use sparingly, only when you know what you are doing):
+#     git commit --no-verify
+#
+# Exit codes:
+#     0 — all staged source files carry an SPDX header
+#     1 — at least one source file is missing a header (commit blocked)
+
+set -euo pipefail
+
+# File extensions that must carry an SPDX header.
+SPDX_EXTENSIONS_REGEX='\.(rs|ts|tsx|js|mjs|cjs|svelte|css|html|sh|toml|yml|yaml|py)$'
+
+# Files in these directories or matching these patterns are exempt:
+EXEMPT_PATTERNS=(
+    'apps/desktop/.svelte-kit/'
+    'apps/desktop/build/'
+    'apps/desktop/node_modules/'
+    'apps/desktop/static/'
+    'apps/desktop/src-tauri/target/'
+    'apps/desktop/src-tauri/gen/'
+    'apps/desktop/src-tauri/icons/'
+    'apps/desktop/src-tauri/Cargo.lock'
+    'apps/desktop/package.json'
+    'apps/desktop/package-lock.json'
+    'apps/desktop/tsconfig.json'
+    'apps/desktop/src-tauri/Cargo.toml'   # has SPDX in metadata, not as comment
+    'apps/desktop/src-tauri/tauri.conf.json'   # JSON, no comment syntax
+    'apps/desktop/src-tauri/capabilities/default.json'
+    'apps/desktop/svelte.config.js'   # SPDX present but file is also a config alias
+    'apps/desktop/src/app.d.ts'
+    '.gitignore'
+    'design/'
+)
+
+is_exempt() {
+    local path="$1"
+    for pattern in "${EXEMPT_PATTERNS[@]}"; do
+        if [[ "$path" == *"$pattern"* ]] || [[ "$path" == "$pattern"* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Collect added/modified staged files matching our extensions.
+mapfile -t staged_files < <(
+    git diff --cached --name-only --diff-filter=AM \
+        | grep -E "$SPDX_EXTENSIONS_REGEX" || true
+)
+
+missing=()
+for f in "${staged_files[@]}"; do
+    if [[ -z "$f" ]] || ! [[ -f "$f" ]]; then
+        continue
+    fi
+    if is_exempt "$f"; then
+        continue
+    fi
+    if ! head -n 5 "$f" | grep -qF 'SPDX-License-Identifier:'; then
+        missing+=("$f")
+    fi
+done
+
+if (( ${#missing[@]} > 0 )); then
+    echo "✗ Pre-commit blocked: missing SPDX-License-Identifier in:"
+    printf '    %s\n' "${missing[@]}"
+    echo
+    echo "Add a header in the first 5 lines of each file. Examples:"
+    echo "  Rust/TS/JS/CSS:    // SPDX-License-Identifier: AGPL-3.0-or-later"
+    echo "  Svelte/HTML/Markdown:  <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->"
+    echo "  Shell/Python/TOML/YAML: # SPDX-License-Identifier: AGPL-3.0-or-later"
+    exit 1
+fi

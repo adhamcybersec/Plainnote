@@ -19,6 +19,14 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  license-headers:
+    name: license headers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: SPDX tree scan
+        run: bash tools/git-hooks/check-spdx-tree.sh
+
   rust:
     name: rust
     runs-on: ${{ matrix.os }}

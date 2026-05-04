@@ -68,6 +68,23 @@ cd apps/desktop && npm run test:e2e
 - TypeScript/Svelte: `svelte-check`. Format on save (Prettier config TBD in M1a).
 - Every committed file starts with `// SPDX-License-Identifier: AGPL-3.0-or-later` (or `<!-- ... -->` for HTML/Markdown that we ship). Pre-commit hook lands in M0 close-out.
 
+## Pre-commit hook (one-time setup)
+
+Every source file must carry an SPDX header. A pre-commit hook enforces this locally:
+
+```bash
+# Run once, from the repository root:
+git config core.hooksPath tools/git-hooks
+```
+
+The hook scans staged files and rejects any source file that doesn't have `SPDX-License-Identifier:` in its first 5 lines. To bypass once (rare; use only when you know what you're doing):
+
+```bash
+git commit --no-verify
+```
+
+CI also runs `bash tools/git-hooks/check-spdx-tree.sh` over the whole tracked tree, so `--no-verify` commits get caught at PR time.
+
 ## License
 
 AGPL-3.0-or-later. Every source file carries an SPDX header.
