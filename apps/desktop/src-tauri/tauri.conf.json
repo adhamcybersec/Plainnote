@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Plainnote",
+  "version": "0.1.0-dev",
+  "identifier": "dev.plainnote.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Plainnote",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 800,
+        "minHeight": 500,
+        "resizable": true,
+        "decorations": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["appimage", "deb"],
+    "category": "Office",
+    "shortDescription": "Local-first note-taking",
+    "longDescription": "Plainnote is a local-first, files-on-disk note-taking app with hierarchical tags and four-mode tag query algebra. AGPL-3.0.",
+    "icon": ["icons/icon.png"],
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
+  }
+}

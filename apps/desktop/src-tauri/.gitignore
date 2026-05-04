@@ -1,0 +1,11 @@
+# Rust
+target/
+Cargo.lock.bak
+
+# Tauri-generated
+gen/
+WixTools/
+
+# generated icons (regenerate via tools/gen-icons.sh)
+# icons/*.icns
+# icons/*.ico

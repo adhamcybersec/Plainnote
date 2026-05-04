@@ -1,0 +1,109 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later
+ * Design tokens — canonical source of truth for the Plainnote UI.
+ * Values mirror design/Plainnote Linux.html exactly. Do not "tweak" colors;
+ * if a token needs to change, change it here and add an ADR explaining why.
+ */
+
+:root,
+[data-theme='light'] {
+	/* surfaces */
+	--bg: #fbfaf7;
+	--surface: #ffffff;
+	--surface-2: #f2efe9;
+	/* ink */
+	--ink: #22252a;
+	--ink-2: #5a6068;
+	--ink-3: #8a909a;
+	/* accent */
+	--accent: #5e7c82;
+	--accent-soft: #d7e1e3;
+	/* status */
+	--warn: #a36b3a;
+	--danger: #9b4444;
+	--rule: #e6e2da;
+	/* footer dots */
+	--dot-ok: #6f8f75;
+	--dot-warn: var(--warn);
+
+	/* typography */
+	--font-ui: 'Inter Variable', system-ui, sans-serif;
+	--font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+	--text-ui: 14px;
+	--text-editor: 15px;
+	--text-secondary: 12px;
+	--leading-prose: 1.55;
+	--leading-ui: 1.4;
+
+	/* spacing — 8px grid */
+	--s-1: 4px;
+	--s-2: 8px;
+	--s-3: 12px;
+	--s-4: 16px;
+	--s-5: 20px;
+	--s-6: 24px;
+	--s-8: 32px;
+	--s-12: 48px;
+
+	/* density (comfortable default) */
+	--row-pad: 16px;
+
+	/* radii — bounded */
+	--r-1: 4px;
+	--r-2: 6px;
+	--r-3: 8px;
+
+	/* shadow — 4px blur cap */
+	--shadow-1: 0 1px 2px rgb(34 37 42 / 0.06), 0 2px 4px rgb(34 37 42 / 0.04);
+
+	/* motion — all ≤ 200ms */
+	--t-fast: 120ms;
+	--t-base: 160ms;
+	--t-slow: 200ms;
+	--ease-out: cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+[data-theme='dark'] {
+	--bg: #1a1b1e;
+	--surface: #22252a;
+	--surface-2: #2b2f35;
+	--ink: #e6e4df;
+	--ink-2: #a8adb5;
+	--ink-3: #6e747e;
+	--accent: #a4c2c8;
+	--accent-soft: #33424a;
+	--warn: #c99466;
+	--danger: #c57878;
+	--rule: #33363c;
+	--dot-ok: #8aa890;
+	--shadow-1: 0 1px 2px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.24);
+}
+
+@media (prefers-color-scheme: dark) {
+	[data-theme='auto'] {
+		--bg: #1a1b1e;
+		--surface: #22252a;
+		--surface-2: #2b2f35;
+		--ink: #e6e4df;
+		--ink-2: #a8adb5;
+		--ink-3: #6e747e;
+		--accent: #a4c2c8;
+		--accent-soft: #33424a;
+		--warn: #c99466;
+		--danger: #c57878;
+		--rule: #33363c;
+		--dot-ok: #8aa890;
+		--shadow-1: 0 1px 2px rgb(0 0 0 / 0.32), 0 2px 4px rgb(0 0 0 / 0.24);
+	}
+}
+
+[data-density='compact'] {
+	--row-pad: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	:root {
+		--t-fast: 0ms;
+		--t-base: 0ms;
+		--t-slow: 0ms;
+	}
+}

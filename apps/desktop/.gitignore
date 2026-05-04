@@ -1,0 +1,20 @@
+# node
+node_modules/
+.npm/
+
+# build
+build/
+dist/
+.svelte-kit/
+
+# vite
+.vite/
+
+# test artifacts
+playwright-report/
+test-results/
+coverage/
+
+# misc
+*.log
+.DS_Store

@@ -5,9 +5,19 @@ build/
 node_modules/
 .cache/
 
-# Tauri
-src-tauri/target/
-src-tauri/gen/
+# Tauri (any depth)
+**/src-tauri/target/
+**/src-tauri/gen/
+**/src-tauri/Cargo.lock.bak
+
+# SvelteKit / Vite (any depth)
+**/node_modules/
+**/.svelte-kit/
+**/build/
+**/dist/
+**/playwright-report/
+**/test-results/
+**/coverage/
 
 # editor / OS
 .vscode/
