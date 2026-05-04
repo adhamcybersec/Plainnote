@@ -1,20 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { defineConfig } from 'vitest/config';
 import { sveltekit } from '@sveltejs/kit/vite';
-import tailwindcss from '@tailwindcss/vite';
 
 const host = process.env.TAURI_DEV_HOST;
 
-// https://vite.dev/config/  +  https://vitest.dev/config/
+// Tailwind 4 is wired via PostCSS (`postcss.config.js`), not via
+// `@tailwindcss/vite`. The Vite plugin intercepts SvelteKit's virtual
+// `?svelte&type=style&lang.css` URLs and reads the raw .svelte file from
+// disk, leading to "Invalid declaration: <js-symbol>" errors. PostCSS runs
+// after Svelte's preprocessor extracts the style block, so it sees correct
+// CSS. See docs/DECISIONS.md ADR-005.
 export default defineConfig({
-	// Note on plugin ordering: keep sveltekit() before tailwindcss() as a
-	// defensive default. Even with this order, Tailwind 4's vite plugin uses
-	// `enforce: 'pre'` and intercepts `?svelte&type=style&lang.css` virtual
-	// URLs, which causes "Invalid declaration" errors when components have
-	// scoped <style> blocks. The robust workaround is to keep page styles in
-	// src/app.css (use class-prefixed selectors) and use Tailwind utility
-	// classes inside components, rather than .svelte component-scoped <style>.
-	plugins: [sveltekit(), tailwindcss()],
+	plugins: [sveltekit()],
 
 	// Tauri expects a fixed dev port and disables auto-open behavior
 	clearScreen: false,
