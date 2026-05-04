@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { ping, saveNote, listNotes, readNote, setIpcTransport } from '$lib/ipc';
+import type { NoteSummary, Note } from '$lib/ipc';
+
+interface InvokeCall {
+	cmd: string;
+	args?: Record<string, unknown>;
+}
+
+function mockTransport(responses: Record<string, unknown>) {
+	const calls: InvokeCall[] = [];
+	const t = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
+		calls.push({ cmd, args });
+		if (!(cmd in responses)) throw new Error(`unexpected cmd: ${cmd}`);
+		return responses[cmd] as T;
+	};
+	return { t, calls };
+}
+
+describe('ipc layer', () => {
+	it('ping forwards to the ping command', async () => {
+		const { t, calls } = mockTransport({ ping: 'pong' });
+		setIpcTransport(t);
+		const result = await ping();
+		expect(result).toBe('pong');
+		expect(calls).toEqual([{ cmd: 'ping', args: undefined }]);
+	});
+
+	it('saveNote passes body and title; returns the id', async () => {
+		const { t, calls } = mockTransport({
+			save_note: '01HXYZ0000000000000000000A'
+		});
+		setIpcTransport(t);
+		const id = await saveNote('hello body', 'a title');
+		expect(id).toBe('01HXYZ0000000000000000000A');
+		expect(calls[0]).toEqual({
+			cmd: 'save_note',
+			args: { body: 'hello body', title: 'a title' }
+		});
+	});
+
+	it('saveNote sends null when title is omitted', async () => {
+		// Critical: the Rust side accepts Option<String>; passing undefined
+		// would serialize to nothing and be parsed as a missing key.
+		const { t, calls } = mockTransport({
+			save_note: '01HABC0000000000000000000A'
+		});
+		setIpcTransport(t);
+		await saveNote('only body');
+		expect(calls[0].args).toEqual({ body: 'only body', title: null });
+	});
+
+	it('listNotes returns a typed array of summaries', async () => {
+		const fixture: NoteSummary[] = [
+			{
+				id: '01HXYZ0000000000000000000A',
+				title: 'one',
+				created: '2026-05-04T10:23:11Z',
+				updated: '2026-05-04T10:23:11Z',
+				preview: 'first line'
+			}
+		];
+		const { t, calls } = mockTransport({ list_notes: fixture });
+		setIpcTransport(t);
+		const result = await listNotes(50);
+		expect(result).toEqual(fixture);
+		expect(calls[0]).toEqual({ cmd: 'list_notes', args: { limit: 50 } });
+	});
+
+	it('readNote returns a typed Note', async () => {
+		const fixture: Note = {
+			id: '01HXYZ0000000000000000000A',
+			title: null,
+			created: '2026-05-04T10:23:11Z',
+			updated: '2026-05-04T10:23:11Z',
+			tags: ['learning/math'],
+			body: 'hello'
+		};
+		const { t, calls } = mockTransport({ read_note: fixture });
+		setIpcTransport(t);
+		const result = await readNote('01HXYZ0000000000000000000A');
+		expect(result).toEqual(fixture);
+		expect(calls[0]).toEqual({
+			cmd: 'read_note',
+			args: { id: '01HXYZ0000000000000000000A' }
+		});
+	});
+
+	it('rejects when the backend errors with a structured IpcError', async () => {
+		// Tauri rejects an invoke promise with the Rust-side serialized error.
+		// We confirm the wrapper preserves it instead of swallowing.
+		const t = async <_T>(): Promise<never> => {
+			throw { code: 'not_found', message: 'no such note' };
+		};
+		setIpcTransport(t);
+		await expect(readNote('01HXYZ0000000000000000000A')).rejects.toMatchObject({
+			code: 'not_found',
+			message: 'no such note'
+		});
+	});
+});
