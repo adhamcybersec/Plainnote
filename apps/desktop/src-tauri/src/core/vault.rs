@@ -112,6 +112,12 @@ impl Vault {
         Ok(Self { root })
     }
 
+    /// Root directory of the vault. The reconciler needs this to convert
+    /// absolute paths it walks into vault-relative paths for the index.
+    pub fn root_path(&self) -> &Path {
+        &self.root
+    }
+
     /// Filesystem path for the note id, partitioned by `created` date.
     fn note_path(&self, id: &NoteId, created: &str) -> Result<std::path::PathBuf, VaultOpError> {
         let dt = parse_iso8601_z(created).ok_or(VaultOpError::Frontmatter(
