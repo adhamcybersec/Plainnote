@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# cargo-deny configuration. Run via: cargo deny check
+# Plainnote is AGPL-3.0-or-later; deps must be license-compatible AND advisory-clean.
+
+[graph]
+all-features = true
+
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "warn"
+ignore = [
+    # All entries below are "unmaintained" type advisories, not vulnerabilities.
+    # Each is a transitive dep of Tauri 2.x with no safe upgrade until Tauri itself
+    # migrates upstream. We re-evaluate on every Tauri minor bump.
+    # See DECISIONS.md ADR-004 for the full rationale.
+
+    # gtk-rs GTK3 bindings — archived in favour of gtk4-rs.
+    # Tauri 2.x is on GTK3 via tao + wry + webkit2gtk + muda.
+    "RUSTSEC-2024-0411", # gdk
+    "RUSTSEC-2024-0412", # gdk-sys
+    "RUSTSEC-2024-0413", # atk
+    "RUSTSEC-2024-0414", # gdk-pixbuf
+    "RUSTSEC-2024-0415", # gdkx11
+    "RUSTSEC-2024-0416", # atk-sys
+    "RUSTSEC-2024-0417", # gdk-pixbuf-sys
+    "RUSTSEC-2024-0418", # gdkx11-sys
+    "RUSTSEC-2024-0419", # gtk
+    "RUSTSEC-2024-0420", # gtk-sys
+
+    # proc-macro-error — older macro-error helper, dep of build-time crates.
+    "RUSTSEC-2024-0370",
+
+    # rust-unic family — Unicode crates pulled in via urlpattern → tauri-utils.
+    "RUSTSEC-2025-0075", # unic-char-range
+    "RUSTSEC-2025-0080", # unic-common
+    "RUSTSEC-2025-0081", # unic-char-property
+    "RUSTSEC-2025-0098", # unic-ucd-version
+    "RUSTSEC-2025-0100", # unic-ucd-ident
+]
+
+[licenses]
+# Allow-list. Anything not listed → cargo deny check fails.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "0BSD",
+    # AGPL-compatible:
+    "AGPL-3.0",
+    "AGPL-3.0-or-later",
+    "GPL-3.0",
+    "GPL-3.0-or-later",
+    "LGPL-3.0",
+    "LGPL-3.0-or-later",
+    # OpenSSL is AGPL-incompatible — we don't link it. If something pulls it in, fail.
+    # Other restrictive licenses (GPL-2.0-only, AGPL-1.0, etc.) deliberately omitted.
+]
+confidence-threshold = 0.85
+exceptions = [
+    # Deps that have a special license file we accept after manual review go here.
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+deny = [
+    # Add specific crates we never want pulled in (e.g., known-bad telemetry crates)
+]
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

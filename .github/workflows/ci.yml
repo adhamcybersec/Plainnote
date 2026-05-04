@@ -61,6 +61,20 @@ jobs:
       - name: cargo test
         run: cargo test --all-features
 
+      - name: install cargo-deny + cargo-audit
+        if: matrix.os == 'ubuntu-24.04'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-audit
+
+      - name: cargo deny check
+        if: matrix.os == 'ubuntu-24.04'
+        run: cargo deny check
+
+      - name: cargo audit
+        if: matrix.os == 'ubuntu-24.04'
+        run: cargo audit
+
       - name: forbid `use tauri` in core/
         run: |
           if grep -rnE '^[[:space:]]*use[[:space:]]+tauri' src/core/; then
@@ -90,5 +104,10 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
 
       - run: npm ci
+      - name: npm audit (production deps, fail on moderate+)
+        run: npm audit --omit=dev --audit-level=moderate
+      - name: npm audit (dev deps, informational only)
+        run: npm audit --audit-level=moderate || true
       - run: npm run check
       - run: npm run test
+      - run: npm run build
