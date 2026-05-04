@@ -20,5 +20,8 @@ src-tauri/gen/
 .env.local
 *.local
 
+# project context — private, never committed
+CLAUDE.md
+
 # vault test data
 vault/
