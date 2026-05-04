@@ -1,0 +1,24 @@
+# build artifacts
+target/
+dist/
+build/
+node_modules/
+.cache/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# secrets / local
+.env
+.env.local
+*.local
+
+# vault test data
+vault/
