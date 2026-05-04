@@ -5,4 +5,5 @@
 //! Everything here takes and returns plain types so it can be unit-tested
 //! in isolation, without launching a webview.
 
+pub mod frontmatter;
 pub mod ids;
