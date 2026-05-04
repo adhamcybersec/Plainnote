@@ -7,3 +7,4 @@
 
 pub mod frontmatter;
 pub mod ids;
+pub mod vault;
