@@ -36,6 +36,14 @@ ignore = [
     "RUSTSEC-2025-0081", # unic-char-property
     "RUSTSEC-2025-0098", # unic-ucd-version
     "RUSTSEC-2025-0100", # unic-ucd-ident
+
+    # glib 0.18.5 — unsoundness in VariantStrIter Iterator impl
+    # (GHSA-wrw7-89jp-8q8g). UB only triggers when iterating malformed
+    # GVariant string arrays; not reachable from Plainnote's threat model
+    # (we don't construct GVariants, Tauri uses glib internally for D-Bus).
+    # Fix is in glib 0.20+; Tauri 2.x is on glib 0.18 via the GTK3 stack.
+    # Re-evaluate when Tauri migrates to gtk4-rs / glib 0.20+.
+    "RUSTSEC-2024-0429",
 ]
 
 [licenses]
