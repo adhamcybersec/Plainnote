@@ -7,7 +7,14 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/  +  https://vitest.dev/config/
 export default defineConfig({
-	plugins: [tailwindcss(), sveltekit()],
+	// Note on plugin ordering: keep sveltekit() before tailwindcss() as a
+	// defensive default. Even with this order, Tailwind 4's vite plugin uses
+	// `enforce: 'pre'` and intercepts `?svelte&type=style&lang.css` virtual
+	// URLs, which causes "Invalid declaration" errors when components have
+	// scoped <style> blocks. The robust workaround is to keep page styles in
+	// src/app.css (use class-prefixed selectors) and use Tailwind utility
+	// classes inside components, rather than .svelte component-scoped <style>.
+	plugins: [sveltekit(), tailwindcss()],
 
 	// Tauri expects a fixed dev port and disables auto-open behavior
 	clearScreen: false,
