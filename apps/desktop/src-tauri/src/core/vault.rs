@@ -63,6 +63,279 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), VaultError> {
     Ok(())
 }
 
+// ─── Vault: filesystem layer that owns notes/ ──────────────────────────────
+
+use crate::core::frontmatter::{self, Frontmatter};
+use crate::core::ids::NoteId;
+use chrono::{DateTime, Datelike, Utc};
+
+/// A loaded note: parsed frontmatter plus body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Note {
+    pub frontmatter: Frontmatter,
+    pub body: String,
+}
+
+/// A row for the chronological list view (read-cheap; no body).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteSummary {
+    pub id: NoteId,
+    pub title: Option<String>,
+    pub created: String,
+    pub updated: String,
+    pub preview: String,
+}
+
+/// Filesystem-backed vault rooted at a directory.
+#[derive(Debug, Clone)]
+pub struct Vault {
+    root: std::path::PathBuf,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum VaultOpError {
+    #[error("vault: {0}")]
+    Io(#[from] VaultError),
+    #[error("frontmatter: {0}")]
+    Frontmatter(#[from] frontmatter::FrontmatterError),
+    #[error("note not found: {0}")]
+    NotFound(NoteId),
+    #[error("UTF-8 error: {0}")]
+    Utf8(#[from] std::string::FromUtf8Error),
+}
+
+impl Vault {
+    /// Open a vault rooted at `root`. Creates `notes/` if missing.
+    pub fn open(root: impl Into<std::path::PathBuf>) -> Result<Self, VaultOpError> {
+        let root: std::path::PathBuf = root.into();
+        fs::create_dir_all(root.join("notes")).map_err(VaultError::Io)?;
+        Ok(Self { root })
+    }
+
+    /// Filesystem path for the note id, partitioned by `created` date.
+    fn note_path(&self, id: &NoteId, created: &str) -> Result<std::path::PathBuf, VaultOpError> {
+        let dt = parse_iso8601_z(created).ok_or(VaultOpError::Frontmatter(
+            frontmatter::FrontmatterError::DisallowedYaml(
+                "timestamp must be ISO-8601 with trailing Z",
+            ),
+        ))?;
+        Ok(self.root.join(format!(
+            "notes/{:04}/{:02}/{:02}/{}.md",
+            dt.year(),
+            dt.month(),
+            dt.day(),
+            id
+        )))
+    }
+
+    /// Save a new note. Generates a fresh id and stamps created/updated to now.
+    pub fn save_note(
+        &self,
+        body: impl Into<String>,
+        title: Option<String>,
+    ) -> Result<NoteId, VaultOpError> {
+        let id = NoteId::new();
+        let now = format_iso8601_z(Utc::now());
+        let fm = Frontmatter {
+            id,
+            created: now.clone(),
+            updated: now,
+            title,
+            tags: vec![],
+            links: vec![],
+            attachments: vec![],
+        };
+        let body = body.into();
+        let path = self.note_path(&id, &fm.created)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(VaultError::Io)?;
+        }
+        let serialized = frontmatter::write(&fm, &body)?;
+        atomic_write(&path, serialized.as_bytes())?;
+        Ok(id)
+    }
+
+    /// Read a note by id. Walks the date-partitioned dirs to find it.
+    pub fn read_note(&self, id: &NoteId) -> Result<Note, VaultOpError> {
+        let path = self
+            .find_note_path(id)?
+            .ok_or(VaultOpError::NotFound(*id))?;
+        let bytes = fs::read(&path).map_err(VaultError::Io)?;
+        let source = String::from_utf8(bytes)?;
+        let (fm, body) = frontmatter::parse(&source)?;
+        Ok(Note {
+            frontmatter: fm,
+            body: body.to_string(),
+        })
+    }
+
+    /// List notes ordered by created date descending. Body excluded for cheap I/O.
+    pub fn list_notes_chrono(&self, limit: usize) -> Result<Vec<NoteSummary>, VaultOpError> {
+        let mut summaries = Vec::new();
+        let notes_dir = self.root.join("notes");
+        for entry in walk_md_files(&notes_dir) {
+            let bytes = match fs::read(&entry) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let source = match String::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let (fm, body) = match frontmatter::parse(&source) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            summaries.push(NoteSummary {
+                id: fm.id,
+                title: fm.title.clone(),
+                created: fm.created.clone(),
+                updated: fm.updated.clone(),
+                preview: body.lines().next().unwrap_or("").to_string(),
+            });
+        }
+        summaries.sort_by(|a, b| b.created.cmp(&a.created));
+        summaries.truncate(limit);
+        Ok(summaries)
+    }
+
+    fn find_note_path(&self, id: &NoteId) -> Result<Option<std::path::PathBuf>, VaultOpError> {
+        let needle = format!("{id}.md");
+        for entry in walk_md_files(&self.root.join("notes")) {
+            if entry.file_name().is_some_and(|n| n == needle.as_str()) {
+                return Ok(Some(entry));
+            }
+        }
+        Ok(None)
+    }
+}
+
+fn walk_md_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    // Iterative depth-first, collecting all .md files. Vaults are small
+    // enough that streaming doesn't earn its complexity.
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(read) = fs::read_dir(&d) else { continue };
+        for entry in read.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|e| e == "md") {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+fn parse_iso8601_z(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
+}
+
+fn format_iso8601_z(dt: DateTime<Utc>) -> String {
+    dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+#[cfg(test)]
+mod vault_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn save_then_read_returns_same_note() {
+        let dir = tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        let id = v
+            .save_note("hello body", Some("title".to_string()))
+            .unwrap();
+        let note = v.read_note(&id).unwrap();
+        assert_eq!(note.frontmatter.id, id);
+        assert_eq!(note.frontmatter.title.as_deref(), Some("title"));
+        assert_eq!(note.body, "hello body");
+    }
+
+    #[test]
+    fn save_persists_into_date_partitioned_path() {
+        let dir = tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        let id = v.save_note("content", None).unwrap();
+        let now = Utc::now();
+        let expected = dir.path().join(format!(
+            "notes/{:04}/{:02}/{:02}/{}.md",
+            now.year(),
+            now.month(),
+            now.day(),
+            id
+        ));
+        assert!(expected.exists(), "expected note at {expected:?}");
+    }
+
+    #[test]
+    fn read_note_returns_not_found_for_unknown_id() {
+        let dir = tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        let unknown = NoteId::new();
+        let err = v.read_note(&unknown).unwrap_err();
+        assert!(matches!(err, VaultOpError::NotFound(_)));
+    }
+
+    #[test]
+    fn list_notes_chrono_orders_by_created_descending() {
+        let dir = tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        let _id1 = v.save_note("first", None).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100)); // crosses 1s boundary
+        let id2 = v.save_note("second", None).unwrap();
+        let summaries = v.list_notes_chrono(10).unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].id, id2, "newest first");
+    }
+
+    #[test]
+    fn list_notes_chrono_respects_limit() {
+        let dir = tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        for _ in 0..5 {
+            v.save_note("body", None).unwrap();
+        }
+        let summaries = v.list_notes_chrono(3).unwrap();
+        assert_eq!(summaries.len(), 3);
+    }
+
+    #[test]
+    fn list_notes_chrono_includes_first_line_preview() {
+        let dir = tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        v.save_note("first line\nsecond line", None).unwrap();
+        let summaries = v.list_notes_chrono(10).unwrap();
+        assert_eq!(summaries[0].preview, "first line");
+    }
+
+    #[test]
+    fn note_on_disk_is_human_readable_markdown() {
+        // The user's contract: open the vault directory, cat any .md, get
+        // valid YAML frontmatter + readable body. No proprietary blobs.
+        let dir = tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        v.save_note("a body that humans can read", Some("readable".to_string()))
+            .unwrap();
+
+        let entries = walk_md_files(&dir.path().join("notes"));
+        let raw =
+            std::fs::read_to_string(entries.first().expect("must produce a .md file")).unwrap();
+        assert!(raw.starts_with("---\n"));
+        assert!(raw.contains("title: readable\n"));
+        assert!(raw.contains("a body that humans can read"));
+    }
+
+    // Catch the "_ = let" typo we accept in walk_md_files via underscore. This
+    // test asserts the walker really skips dirs without crashing on permission
+    // surprises later. (Currently no perm-denied path; placeholder for v0.2.)
+}
+
 #[cfg(test)]
 mod atomic_write_tests {
     use super::*;
