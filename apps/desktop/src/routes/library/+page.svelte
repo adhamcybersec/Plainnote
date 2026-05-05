@@ -105,6 +105,7 @@
 			</div>
 			<a class="pn-library__back" href="/">← Capture</a>
 			<a class="pn-library__back" href="/graph" data-testid="graph-link">Graph →</a>
+			<a class="pn-library__back" href="/settings" data-testid="settings-link">Settings</a>
 		</header>
 
 		<div class="pn-library2__modebar">
