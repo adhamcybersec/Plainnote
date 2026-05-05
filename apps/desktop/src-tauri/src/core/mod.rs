@@ -11,6 +11,7 @@ pub mod ids;
 pub mod index;
 pub mod links;
 pub mod query;
+pub mod reminders;
 pub mod tags;
 pub mod vault;
 pub mod watcher;

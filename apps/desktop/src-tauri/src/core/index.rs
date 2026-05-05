@@ -200,6 +200,26 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX idx_note_link_target_id ON note_link(target_id);
     CREATE INDEX idx_note_link_target_text ON note_link(target_text);
     "#,
+    // 4: reminders. One row per scheduled notification. `note_id` is
+    // nullable because a reminder may outlive the note it was attached
+    // to — we keep the row so the notification still fires (the body
+    // is enough on its own). `fired_at` is set by the scheduler after
+    // the notification is delivered; rows are never deleted on fire,
+    // so the user can review their history (Settings UI in M9).
+    r#"
+    CREATE TABLE reminder (
+        id TEXT PRIMARY KEY,             -- ULID for stable references
+        note_id TEXT,                    -- ULID of the source note (nullable)
+        fire_at TEXT NOT NULL,           -- ISO-8601 with 'Z'
+        fired_at TEXT,                   -- NULL until the scheduler delivers
+        body TEXT NOT NULL,              -- pre-rendered notification body
+        cancelled_at TEXT                -- NULL = active; set when user cancels
+    ) STRICT;
+
+    CREATE INDEX idx_reminder_due ON reminder(fire_at)
+        WHERE fired_at IS NULL AND cancelled_at IS NULL;
+    CREATE INDEX idx_reminder_note ON reminder(note_id);
+    "#,
 ];
 
 impl Index {
