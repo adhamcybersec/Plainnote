@@ -268,3 +268,9 @@ body {
 	text-align: center;
 	color: var(--ink-3);
 }
+
+.pn-library__list {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+}
