@@ -107,6 +107,29 @@ export function setTags(id: NoteId, tags: string[]): Promise<void> {
 	return transport<void>('set_tags', { id, tags });
 }
 
+// ─── Vault management (M9) ─────────────────────────────────────────────────
+
+export interface VaultInfo {
+	path: string;
+	note_count: number;
+}
+
+export interface ReindexSummary {
+	inserted: number;
+	updated: number;
+	deleted: number;
+}
+
+/** Path + note count for the Settings page. */
+export function vaultInfo(): Promise<VaultInfo> {
+	return transport<VaultInfo>('vault_info');
+}
+
+/** Force a full vault re-walk. Useful when external changes look out of sync. */
+export function reindexVault(): Promise<ReindexSummary> {
+	return transport<ReindexSummary>('reindex_vault');
+}
+
 // ─── App-wide preferences (M3) ─────────────────────────────────────────────
 
 /** Read a string preference from the persistent meta table. Null = unset. */

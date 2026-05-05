@@ -94,6 +94,48 @@ impl IpcError {
     }
 }
 
+/// Vault information surfaced in Settings: absolute path to the vault
+/// root and a count of indexed notes. Versioned wire type.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct VaultInfoV1 {
+    pub path: String,
+    pub note_count: i64,
+}
+
+/// Surface the vault root path + note count for the Settings page.
+#[tauri::command]
+pub fn vault_info(state: State<'_, AppState>) -> Result<VaultInfoV1, IpcError> {
+    let path = state.vault.root_path().to_string_lossy().into_owned();
+    let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    let note_count: i64 = idx
+        .conn()
+        .query_row("SELECT COUNT(*) FROM note_index", [], |row| row.get(0))
+        .map_err(|e| IpcError::io(e.to_string()))?;
+    Ok(VaultInfoV1 { path, note_count })
+}
+
+/// Force-reindex the vault. The watcher's manifest-hash short-circuit is
+/// bypassed; every .md is re-walked. Returns the reconcile summary.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ReindexSummaryV1 {
+    pub inserted: usize,
+    pub updated: usize,
+    pub deleted: usize,
+}
+
+#[tauri::command]
+pub fn reindex_vault(state: State<'_, AppState>) -> Result<ReindexSummaryV1, IpcError> {
+    let mut idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    let summary = idx
+        .reconcile_with_vault(&state.vault)
+        .map_err(|e| IpcError::io(e.to_string()))?;
+    Ok(ReindexSummaryV1 {
+        inserted: summary.inserted,
+        updated: summary.updated,
+        deleted: summary.deleted,
+    })
+}
+
 #[tauri::command]
 pub fn ping() -> &'static str {
     "pong"

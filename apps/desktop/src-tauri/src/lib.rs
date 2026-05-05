@@ -70,6 +70,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::vault_info,
+            commands::reindex_vault,
             commands::ping,
             commands::save_note,
             commands::list_notes,
