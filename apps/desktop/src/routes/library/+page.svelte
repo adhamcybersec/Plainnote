@@ -104,6 +104,7 @@
 				</span>
 			</div>
 			<a class="pn-library__back" href="/">← Capture</a>
+			<a class="pn-library__back" href="/graph" data-testid="graph-link">Graph →</a>
 		</header>
 
 		<div class="pn-library2__modebar">
