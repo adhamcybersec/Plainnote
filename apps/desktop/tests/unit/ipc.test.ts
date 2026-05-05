@@ -8,6 +8,8 @@ import {
 	queryNotes,
 	setTags,
 	searchNotesByTitle,
+	getMeta,
+	setMeta,
 	outboundLinksOf,
 	backlinksFor,
 	setIpcTransport,
@@ -168,6 +170,33 @@ describe('ipc layer', () => {
 		setIpcTransport(t);
 		await searchNotesByTitle('q', 3);
 		expect(calls[0].args).toEqual({ prefix: 'q', limit: 3 });
+	});
+
+	it('getMeta forwards the key and returns string|null', async () => {
+		const { t, calls } = mockTransport({ get_meta: 'rendered' });
+		setIpcTransport(t);
+		const v = await getMeta('editor.render_mode');
+		expect(v).toBe('rendered');
+		expect(calls[0]).toEqual({
+			cmd: 'get_meta',
+			args: { key: 'editor.render_mode' }
+		});
+	});
+
+	it('getMeta returns null for unknown keys', async () => {
+		const { t } = mockTransport({ get_meta: null });
+		setIpcTransport(t);
+		expect(await getMeta('nope')).toBeNull();
+	});
+
+	it('setMeta forwards key and value', async () => {
+		const { t, calls } = mockTransport({ set_meta: null });
+		setIpcTransport(t);
+		await setMeta('editor.render_mode', 'source');
+		expect(calls[0]).toEqual({
+			cmd: 'set_meta',
+			args: { key: 'editor.render_mode', value: 'source' }
+		});
 	});
 
 	it('outboundLinksOf forwards the id and returns typed LinkRef[]', async () => {

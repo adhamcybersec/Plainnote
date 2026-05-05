@@ -117,3 +117,129 @@
 .pn-editor .cm-editor.cm-focused {
 	outline: none;
 }
+
+/* ─── Focus / Note view (M3-T7) ──────────────────────────────────────────── */
+.pn-focus {
+	display: flex;
+	flex-direction: column;
+	height: 100vh;
+	max-width: 880px;
+	margin: 0 auto;
+	padding: 16px 24px 24px;
+	gap: 12px;
+}
+.pn-focus__head {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding-bottom: 8px;
+	border-bottom: 1px solid var(--rule, rgba(0, 0, 0, 0.08));
+}
+.pn-focus__back {
+	color: var(--accent, #5e7c82);
+	text-decoration: none;
+	font-size: 14px;
+}
+.pn-focus__title {
+	flex: 1;
+	font-size: 18px;
+	font-weight: 600;
+	margin: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.pn-focus__body {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+}
+.pn-focus__body[data-render-mode='rendered'] {
+	padding: 8px 0;
+}
+
+/* Rendered markdown — minimal but readable defaults. */
+.pn-prose {
+	line-height: 1.55;
+	font-size: 15px;
+}
+.pn-prose h1, .pn-prose h2, .pn-prose h3 {
+	margin: 1.2em 0 0.4em;
+	line-height: 1.25;
+}
+.pn-prose h1 { font-size: 1.6em; }
+.pn-prose h2 { font-size: 1.3em; }
+.pn-prose h3 { font-size: 1.1em; }
+.pn-prose p { margin: 0.6em 0; }
+.pn-prose code {
+	font-family: var(--font-mono, ui-monospace, monospace);
+	font-size: 0.92em;
+	padding: 0.1em 0.3em;
+	background: var(--accent-soft, rgba(94, 124, 130, 0.12));
+	border-radius: 3px;
+}
+.pn-prose pre {
+	padding: 12px;
+	background: var(--accent-soft, rgba(94, 124, 130, 0.12));
+	border-radius: 6px;
+	overflow-x: auto;
+}
+.pn-prose pre code {
+	padding: 0;
+	background: transparent;
+}
+.pn-prose blockquote {
+	border-left: 3px solid var(--accent, #5e7c82);
+	margin: 0.6em 0;
+	padding: 0 12px;
+	color: var(--text-muted, #555);
+}
+.pn-prose table {
+	border-collapse: collapse;
+	margin: 0.6em 0;
+}
+.pn-prose th, .pn-prose td {
+	border: 1px solid var(--rule, rgba(0, 0, 0, 0.12));
+	padding: 4px 8px;
+}
+
+/* Backlinks panel. */
+.pn-backlinks {
+	border-top: 1px solid var(--rule, rgba(0, 0, 0, 0.08));
+	padding-top: 12px;
+}
+.pn-backlinks__title {
+	font-size: 12px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--text-muted, #555);
+	margin: 0 0 6px;
+}
+.pn-backlinks__list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+.pn-backlink {
+	display: block;
+	padding: 8px 10px;
+	border-radius: 4px;
+	color: inherit;
+	text-decoration: none;
+}
+.pn-backlink:hover {
+	background: var(--accent-soft, rgba(94, 124, 130, 0.12));
+}
+.pn-backlink__title {
+	display: block;
+	font-weight: 500;
+}
+.pn-backlink__preview {
+	display: block;
+	font-size: 13px;
+	color: var(--text-muted, #555);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}

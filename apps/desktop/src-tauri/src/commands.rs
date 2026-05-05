@@ -253,6 +253,41 @@ pub struct BacklinkV1 {
     pub raw: String,
 }
 
+/// Read a key from the persistent `meta` table. Returns `None` for unknown
+/// keys so the frontend can apply its default. Used for tiny app-wide
+/// preferences (e.g. the editor render-mode toggle); not for note content.
+#[tauri::command]
+pub fn get_meta(key: String, state: State<'_, AppState>) -> Result<Option<String>, IpcError> {
+    let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    let value: Option<String> = idx
+        .conn()
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            rusqlite::params![key],
+            |row| row.get(0),
+        )
+        .ok();
+    Ok(value)
+}
+
+/// Upsert a key/value pair into the `meta` table. The schema_version key is
+/// reserved and rejected so a misbehaving frontend cannot corrupt migrations.
+#[tauri::command]
+pub fn set_meta(key: String, value: String, state: State<'_, AppState>) -> Result<(), IpcError> {
+    if key == "schema_version" {
+        return Err(IpcError::invalid("reserved key: schema_version"));
+    }
+    let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    idx.conn()
+        .execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![key, value],
+        )
+        .map_err(|e| IpcError::io(e.to_string()))?;
+    Ok(())
+}
+
 /// One row in the wikilink autocomplete dropdown. Versioned wire type.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct TitleHitV1 {

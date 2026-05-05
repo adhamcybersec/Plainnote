@@ -66,6 +66,8 @@ pub fn run() {
             commands::search_notes_by_title,
             commands::outbound_links_of,
             commands::backlinks_for,
+            commands::get_meta,
+            commands::set_meta,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -107,6 +107,18 @@ export function setTags(id: NoteId, tags: string[]): Promise<void> {
 	return transport<void>('set_tags', { id, tags });
 }
 
+// ─── App-wide preferences (M3) ─────────────────────────────────────────────
+
+/** Read a string preference from the persistent meta table. Null = unset. */
+export function getMeta(key: string): Promise<string | null> {
+	return transport<string | null>('get_meta', { key });
+}
+
+/** Persist a string preference. `schema_version` is reserved (rejected). */
+export function setMeta(key: string, value: string): Promise<void> {
+	return transport<void>('set_meta', { key, value });
+}
+
 // ─── Wikilink autocomplete (M3) ────────────────────────────────────────────
 
 export interface TitleHit {
