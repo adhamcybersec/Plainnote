@@ -8,6 +8,7 @@
 
 use rusqlite::params;
 
+use crate::core::ids::NoteId;
 use crate::core::index::Index;
 
 #[derive(Debug, thiserror::Error)]
@@ -93,6 +94,91 @@ pub fn ensure_tag(index: &mut Index, path: &str) -> Result<(), TagError> {
 
     tx.commit()?;
     Ok(())
+}
+
+/// Associate a note with a tag. Ensures the tag (and ancestors) exist.
+/// Idempotent: re-adding a tag-note pair is a no-op.
+pub fn add_tag_to_note(index: &mut Index, note_id: &NoteId, path: &str) -> Result<(), TagError> {
+    ensure_tag(index, path)?;
+    index.conn_mut().execute(
+        "INSERT INTO note_tag (note_id, tag_path) VALUES (?1, ?2)
+         ON CONFLICT(note_id, tag_path) DO NOTHING",
+        params![note_id.to_string(), path],
+    )?;
+    Ok(())
+}
+
+/// Remove a (note_id, tag_path) association if it exists. Does not delete
+/// the tag itself; call `purge_orphan_tags` for that.
+pub fn remove_tag_from_note(
+    index: &mut Index,
+    note_id: &NoteId,
+    path: &str,
+) -> Result<(), TagError> {
+    index.conn_mut().execute(
+        "DELETE FROM note_tag WHERE note_id = ?1 AND tag_path = ?2",
+        params![note_id.to_string(), path],
+    )?;
+    Ok(())
+}
+
+/// List the tags explicitly assigned to a note (does *not* include
+/// ancestors — those are derived via the closure table at query time).
+pub fn list_tags_for_note(index: &Index, note_id: &NoteId) -> Result<Vec<String>, TagError> {
+    let mut stmt = index
+        .conn()
+        .prepare("SELECT tag_path FROM note_tag WHERE note_id = ?1")?;
+    let tags: Vec<String> = stmt
+        .query_map(params![note_id.to_string()], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(tags)
+}
+
+/// Remove every tag that has neither notes referencing it (directly or via
+/// any descendant) nor descendants in the closure table. Returns the list
+/// of paths that were removed.
+///
+/// Loops until a pass removes nothing — that way orphan-cascading (a leaf
+/// goes, then its parent has no descendants, then its parent's parent...)
+/// converges in one call without recursion.
+pub fn purge_orphan_tags(index: &mut Index) -> Result<Vec<String>, TagError> {
+    let mut all_removed = Vec::new();
+    loop {
+        let candidates: Vec<String> = {
+            let mut stmt = index.conn().prepare(
+                "SELECT t.path FROM tag t
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM note_tag nt
+                     JOIN tag_closure tc ON nt.tag_path = tc.descendant
+                     WHERE tc.ancestor = t.path
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM tag_closure tc2
+                     WHERE tc2.ancestor = t.path AND tc2.depth > 0
+                 )",
+            )?;
+            let rows: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        };
+        if candidates.is_empty() {
+            break;
+        }
+        let tx = index.conn_mut().transaction()?;
+        for path in &candidates {
+            tx.execute(
+                "DELETE FROM tag_closure WHERE ancestor = ?1 OR descendant = ?1",
+                params![path],
+            )?;
+            tx.execute("DELETE FROM tag WHERE path = ?1", params![path])?;
+        }
+        tx.commit()?;
+        all_removed.extend(candidates);
+    }
+    Ok(all_removed)
 }
 
 #[cfg(test)]
@@ -277,6 +363,133 @@ mod tests {
         // Self-edge only.
         let closure: Vec<(String, String, i64)> = closure_rows(&idx);
         assert_eq!(closure, vec![("inbox".into(), "inbox".into(), 0)]);
+    }
+
+    // ─── note-tag association + delete (M2-T3) ─────────────────────────
+
+    use crate::core::ids::NoteId;
+
+    #[test]
+    fn add_tag_to_note_creates_association_and_ensures_tag() {
+        let (_dir, mut idx) = open_index_with_tag_schema();
+        let id = NoteId::new();
+        add_tag_to_note(&mut idx, &id, "learning/math").unwrap();
+
+        let tag_count: i64 = idx
+            .conn()
+            .query_row("SELECT COUNT(*) FROM tag", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tag_count, 2); // learning + learning/math
+
+        let assoc_count: i64 = idx
+            .conn()
+            .query_row("SELECT COUNT(*) FROM note_tag", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(assoc_count, 1); // only the leaf is associated; ancestors come via closure
+    }
+
+    #[test]
+    fn add_tag_to_note_is_idempotent() {
+        let (_dir, mut idx) = open_index_with_tag_schema();
+        let id = NoteId::new();
+        add_tag_to_note(&mut idx, &id, "math").unwrap();
+        add_tag_to_note(&mut idx, &id, "math").unwrap();
+
+        let count: i64 = idx
+            .conn()
+            .query_row("SELECT COUNT(*) FROM note_tag", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn list_tags_for_note_returns_only_explicitly_assigned() {
+        let (_dir, mut idx) = open_index_with_tag_schema();
+        let id = NoteId::new();
+        add_tag_to_note(&mut idx, &id, "learning/math/calculus").unwrap();
+        add_tag_to_note(&mut idx, &id, "work/projectTTK").unwrap();
+
+        let mut tags = list_tags_for_note(&idx, &id).unwrap();
+        tags.sort();
+        assert_eq!(
+            tags,
+            vec![
+                "learning/math/calculus".to_string(),
+                "work/projectTTK".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_tag_from_note_drops_only_that_association() {
+        let (_dir, mut idx) = open_index_with_tag_schema();
+        let id = NoteId::new();
+        add_tag_to_note(&mut idx, &id, "math").unwrap();
+        add_tag_to_note(&mut idx, &id, "physics").unwrap();
+        remove_tag_from_note(&mut idx, &id, "math").unwrap();
+
+        let tags = list_tags_for_note(&idx, &id).unwrap();
+        assert_eq!(tags, vec!["physics".to_string()]);
+    }
+
+    #[test]
+    fn purge_orphan_tags_removes_unreferenced_leaves() {
+        // After every note that referenced a tag is gone, the tag should be
+        // removable. But shared ancestors must remain if other tags need them.
+        let (_dir, mut idx) = open_index_with_tag_schema();
+        let id = NoteId::new();
+        add_tag_to_note(&mut idx, &id, "learning/math/calculus").unwrap();
+        add_tag_to_note(&mut idx, &id, "learning/math/algebra").unwrap();
+
+        // Detach calculus from the note.
+        remove_tag_from_note(&mut idx, &id, "learning/math/calculus").unwrap();
+        let removed = purge_orphan_tags(&mut idx).unwrap();
+        // Only `learning/math/calculus` is orphaned (no notes, no descendants).
+        // `learning` and `learning/math` are still in use via algebra.
+        assert_eq!(removed, vec!["learning/math/calculus".to_string()]);
+
+        // Now detach algebra.
+        remove_tag_from_note(&mut idx, &id, "learning/math/algebra").unwrap();
+        let removed2 = purge_orphan_tags(&mut idx).unwrap();
+        let mut sorted = removed2;
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            vec![
+                "learning".to_string(),
+                "learning/math".to_string(),
+                "learning/math/algebra".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn purge_keeps_ancestor_when_a_sibling_branch_still_has_notes() {
+        // Two siblings under the same ancestor. Detach one note's tag; the
+        // other sibling still anchors the ancestor through its own note.
+        let (_dir, mut idx) = open_index_with_tag_schema();
+        let id_a = NoteId::new();
+        let id_b = NoteId::new();
+        add_tag_to_note(&mut idx, &id_a, "learning/math/calculus").unwrap();
+        add_tag_to_note(&mut idx, &id_b, "learning/math/algebra").unwrap();
+
+        // Untag note A from calculus.
+        remove_tag_from_note(&mut idx, &id_a, "learning/math/calculus").unwrap();
+        let removed = purge_orphan_tags(&mut idx).unwrap();
+
+        assert_eq!(removed, vec!["learning/math/calculus".to_string()]);
+        // learning/math must remain — algebra still descends from it.
+        let remaining: Vec<String> = idx
+            .conn()
+            .prepare("SELECT path FROM tag ORDER BY path")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(remaining.contains(&"learning/math".to_string()));
+        assert!(remaining.contains(&"learning".to_string()));
+        assert!(remaining.contains(&"learning/math/algebra".to_string()));
     }
 
     use proptest::prelude::*;
