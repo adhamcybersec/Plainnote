@@ -9,6 +9,7 @@
 <script lang="ts">
 	import { saveNote } from '$lib/ipc';
 	import type { IpcError } from '$lib/ipc';
+	import { announce } from '$lib/status';
 
 	let body = $state('');
 	let saving = $state(false);
@@ -26,6 +27,7 @@
 			await saveNote(trimmed);
 			body = '';
 			saveStatus = 'saved';
+			announce('Note saved.');
 			textarea?.focus();
 			if (savedTimer) clearTimeout(savedTimer);
 			savedTimer = setTimeout(() => {
@@ -35,6 +37,7 @@
 			saveStatus = 'error';
 			const ipc = e as Partial<IpcError>;
 			errorMessage = ipc?.message ?? String(e);
+			announce(`Save failed: ${errorMessage ?? 'unknown error'}`);
 		} finally {
 			saving = false;
 		}
@@ -83,7 +86,10 @@
 		</div>
 	</div>
 
-	<footer class="pn-footer" role="status" aria-live="polite">
+	<!-- Visual save-state chip. The aria-live announcement now lives in
+	     the global region defined by +layout.svelte; the chip itself is
+	     decorative for sighted users only. -->
+	<footer class="pn-footer">
 		{#if saveStatus === 'saved'}
 			<span class="pn-footer__chip pn-footer__chip--ok" data-testid="saved-chip">Saved</span>
 		{:else if saveStatus === 'error'}
