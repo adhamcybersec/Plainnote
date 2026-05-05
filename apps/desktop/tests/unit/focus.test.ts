@@ -119,6 +119,38 @@ describe('Focus route', () => {
 		expect(empty.textContent).toMatch(/no notes link here yet/i);
 	});
 
+	it('opens the reminder dialog and saves through IPC (M6-T5)', async () => {
+		const calls: InvokeCall[] = [];
+		const recordedSet: InvokeCall[] = [];
+		const t = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
+			calls.push({ cmd, args });
+			switch (cmd) {
+				case 'read_note':
+					return baseNote as T;
+				case 'backlinks_for':
+					return [] as T;
+				case 'get_meta':
+					return null as T;
+				case 'set_reminder':
+					recordedSet.push({ cmd, args });
+					return '01HABC0000000000000000000A' as T;
+				default:
+					throw new Error(`unexpected cmd: ${cmd}`);
+			}
+		};
+		setIpcTransport(t);
+		const { findByTestId } = render(FocusPage);
+		const trigger = await findByTestId('set-reminder-btn');
+		await fireEvent.click(trigger);
+		const save = await findByTestId('save');
+		await fireEvent.click(save);
+		// One set_reminder call landed with this note's id.
+		expect(recordedSet.length).toBe(1);
+		expect(recordedSet[0].args).toMatchObject({
+			noteId: NOTE_ID
+		});
+	});
+
 	it('renders backlinks with source title + preview', async () => {
 		const { t } = makeTransport({
 			read_note: () => baseNote,

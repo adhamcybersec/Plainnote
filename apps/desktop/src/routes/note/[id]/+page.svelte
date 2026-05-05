@@ -23,6 +23,7 @@
 		type TitleHit
 	} from '$lib/ipc';
 	import CodeMirrorWrapper from '$lib/components/CodeMirrorWrapper.svelte';
+	import SetReminderDialog from '$lib/components/SetReminderDialog.svelte';
 	import { renderMarkdown } from '$lib/render-markdown';
 
 	type RenderMode = 'source' | 'rendered';
@@ -36,6 +37,7 @@
 	let renderMode = $state<RenderMode>(DEFAULT_RENDER_MODE);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
+	let reminderOpen = $state(false);
 
 	async function titleSearcher(prefix: string, limit: number): Promise<TitleHit[]> {
 		// Errors here would dump the dropdown — swallow to keep the editor
@@ -98,6 +100,15 @@
 		<button
 			type="button"
 			class="pn-btn pn-btn--ghost"
+			data-testid="set-reminder-btn"
+			onclick={() => (reminderOpen = true)}
+			disabled={!note}
+		>
+			Set reminder
+		</button>
+		<button
+			type="button"
+			class="pn-btn pn-btn--ghost"
 			data-testid="toggle-render-mode"
 			aria-pressed={renderMode === 'rendered'}
 			onclick={toggleRenderMode}
@@ -105,6 +116,15 @@
 			{renderMode === 'rendered' ? 'Source' : 'Rendered'}
 		</button>
 	</header>
+
+	{#if reminderOpen && note}
+		<SetReminderDialog
+			noteId={note.id}
+			defaultBody={displayTitle(note)}
+			onSaved={() => (reminderOpen = false)}
+			onCancel={() => (reminderOpen = false)}
+		/>
+	{/if}
 
 	{#if loading}
 		<p class="pn-empty" data-testid="loading">Loading…</p>
