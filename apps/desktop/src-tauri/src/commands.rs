@@ -12,12 +12,17 @@ use crate::core::graph;
 use crate::core::ids::NoteId;
 use crate::core::index::Index;
 use crate::core::query::{self, QueryMode};
+use crate::core::reminder_scheduler::Wake;
 use crate::core::vault::{NoteSummary, Vault};
 
 /// Application state shared across Tauri commands.
 pub struct AppState {
     pub vault: Vault,
     pub index: Arc<Mutex<Index>>,
+    /// Sender to wake the reminder scheduler when reminders are
+    /// created/cancelled. Optional so tests that build AppState by hand
+    /// don't need to spin up the scheduler.
+    pub reminder_wake: Option<tokio::sync::mpsc::UnboundedSender<Wake>>,
 }
 
 /// Versioned wire types. Bumping a struct version is part of the IPC

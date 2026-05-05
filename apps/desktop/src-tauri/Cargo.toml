@@ -29,6 +29,7 @@ notify = { version = "6", default-features = false, features = ["macos_kqueue"] 
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 rand = { version = "0.8", default-features = false }
 rand_chacha = { version = "0.3", default-features = false }
+notify-rust = { version = "4", default-features = false, features = ["d"] }
 
 [dev-dependencies]
 proptest = "1"

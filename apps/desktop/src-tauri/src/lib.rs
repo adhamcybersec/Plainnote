@@ -8,8 +8,10 @@ use tauri::Manager;
 
 use crate::commands::AppState;
 use crate::core::index::Index;
+use crate::core::reminder_scheduler::{self, DesktopNotifier, Wake};
 use crate::core::vault::Vault;
 use crate::core::watcher::Watcher;
+use tokio::sync::mpsc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -31,9 +33,21 @@ pub fn run() {
             let _ = index.reconcile_with_vault(&vault);
 
             let index_arc = Arc::new(Mutex::new(index));
+
+            // Spawn the reminder scheduler. The wake_tx is stashed in AppState
+            // so commands::set_reminder / cancel_reminder can poke it whenever
+            // the user changes the reminder set.
+            let notifier = Arc::new(DesktopNotifier);
+            let wake_tx: mpsc::UnboundedSender<Wake> = reminder_scheduler::spawn_scheduler(
+                index_arc.clone(),
+                notifier,
+                Duration::from_secs(60),
+            );
+
             app.manage(AppState {
                 vault: vault.clone(),
                 index: index_arc.clone(),
+                reminder_wake: Some(wake_tx),
             });
 
             // Spawn the filesystem watcher. Every debounced event triggers a
