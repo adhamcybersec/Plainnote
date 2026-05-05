@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 use tauri::State;
 
+use crate::core::graph;
 use crate::core::ids::NoteId;
 use crate::core::index::Index;
 use crate::core::query::{self, QueryMode};
@@ -286,6 +287,63 @@ pub fn set_meta(key: String, value: String, state: State<'_, AppState>) -> Resul
         )
         .map_err(|e| IpcError::io(e.to_string()))?;
     Ok(())
+}
+
+/// One node in the graph view payload. Versioned wire type.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct GraphNodeV1 {
+    pub id: String,
+    pub title: String,
+    pub size: f32,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// One edge in the graph view payload.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct GraphEdgeV1 {
+    pub source: String,
+    pub target: String,
+}
+
+/// Full graph payload returned to the frontend.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct GraphDataV1 {
+    pub nodes: Vec<GraphNodeV1>,
+    pub edges: Vec<GraphEdgeV1>,
+    /// True when the vault exceeded the 5k-node cap; the UI surfaces a
+    /// "graph truncated" notice rather than rendering a soup.
+    pub truncated: bool,
+}
+
+/// Build the graph (nodes + edges + force-layout coordinates) from the
+/// current index. Coordinates are deterministic given the same input.
+#[tauri::command]
+pub fn graph_data(state: State<'_, AppState>) -> Result<GraphDataV1, IpcError> {
+    let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    let g = graph::build_graph(&idx).map_err(|e| IpcError::io(e.to_string()))?;
+    Ok(GraphDataV1 {
+        nodes: g
+            .nodes
+            .into_iter()
+            .map(|n| GraphNodeV1 {
+                id: n.id,
+                title: n.title,
+                size: n.size,
+                x: n.x,
+                y: n.y,
+            })
+            .collect(),
+        edges: g
+            .edges
+            .into_iter()
+            .map(|e| GraphEdgeV1 {
+                source: e.source,
+                target: e.target,
+            })
+            .collect(),
+        truncated: g.truncated,
+    })
 }
 
 /// One row in the wikilink autocomplete dropdown. Versioned wire type.

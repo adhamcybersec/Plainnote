@@ -119,6 +119,36 @@ export function setMeta(key: string, value: string): Promise<void> {
 	return transport<void>('set_meta', { key, value });
 }
 
+// ─── Graph view (M5) ───────────────────────────────────────────────────────
+
+export interface GraphNode {
+	id: NoteId;
+	title: string;
+	size: number;
+	x: number;
+	y: number;
+}
+
+export interface GraphEdge {
+	source: NoteId;
+	target: NoteId;
+}
+
+export interface GraphData {
+	nodes: GraphNode[];
+	edges: GraphEdge[];
+	/** True when the vault exceeded the 5k-node cap. */
+	truncated: boolean;
+}
+
+/**
+ * Build the graph payload (nodes + edges + force-layout coordinates).
+ * The layout is deterministic given the same vault contents.
+ */
+export function graphData(): Promise<GraphData> {
+	return transport<GraphData>('graph_data');
+}
+
 // ─── Wikilink autocomplete (M3) ────────────────────────────────────────────
 
 export interface TitleHit {

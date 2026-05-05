@@ -6,6 +6,7 @@
 //! in isolation, without launching a webview.
 
 pub mod frontmatter;
+pub mod graph;
 pub mod ids;
 pub mod index;
 pub mod links;

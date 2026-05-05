@@ -27,6 +27,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+rand = { version = "0.8", default-features = false }
+rand_chacha = { version = "0.3", default-features = false }
 
 [dev-dependencies]
 proptest = "1"

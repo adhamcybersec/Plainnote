@@ -10,12 +10,21 @@ import {
 	searchNotesByTitle,
 	getMeta,
 	setMeta,
+	graphData,
 	outboundLinksOf,
 	backlinksFor,
 	setIpcTransport,
 	DEFAULT_QUERY_MODE
 } from '$lib/ipc';
-import type { NoteSummary, Note, TagRow, LinkRef, Backlink, TitleHit } from '$lib/ipc';
+import type {
+	NoteSummary,
+	Note,
+	TagRow,
+	LinkRef,
+	Backlink,
+	TitleHit,
+	GraphData
+} from '$lib/ipc';
 
 interface InvokeCall {
 	cmd: string;
@@ -197,6 +206,21 @@ describe('ipc layer', () => {
 			cmd: 'set_meta',
 			args: { key: 'editor.render_mode', value: 'source' }
 		});
+	});
+
+	it('graphData returns nodes, edges, truncated flag', async () => {
+		const fixture: GraphData = {
+			nodes: [
+				{ id: '01HABC0000000000000000000A', title: 'A', size: 6, x: 0, y: 0 }
+			],
+			edges: [],
+			truncated: false
+		};
+		const { t, calls } = mockTransport({ graph_data: fixture });
+		setIpcTransport(t);
+		const result = await graphData();
+		expect(result).toEqual(fixture);
+		expect(calls[0]).toEqual({ cmd: 'graph_data', args: undefined });
 	});
 
 	it('outboundLinksOf forwards the id and returns typed LinkRef[]', async () => {
