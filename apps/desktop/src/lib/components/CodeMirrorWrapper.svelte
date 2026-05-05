@@ -35,13 +35,21 @@
 	import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 	import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 	import { markdown } from '@codemirror/lang-markdown';
+	import {
+		wikilinkAutocomplete,
+		type TitleSearcher
+	} from '$lib/components/wikilink-autocomplete';
 
 	let {
 		value = '',
-		onChange = (_v: string) => {}
+		onChange = (_v: string) => {},
+		// Optional: pass a custom searcher for tests / non-Tauri contexts.
+		// Undefined disables the wikilink autocomplete extension entirely.
+		titleSearcher = undefined
 	} = $props<{
 		value?: string;
 		onChange?: (v: string) => void;
+		titleSearcher?: TitleSearcher | undefined;
 	}>();
 
 	let host: HTMLDivElement | undefined = $state();
@@ -58,6 +66,7 @@
 					history(),
 					markdown(),
 					keymap.of([...defaultKeymap, ...historyKeymap]),
+					...(titleSearcher ? [wikilinkAutocomplete(titleSearcher)] : []),
 					EditorView.updateListener.of((u) => {
 						if (u.docChanged) onChange(u.state.doc.toString());
 					})

@@ -253,6 +253,35 @@ pub struct BacklinkV1 {
     pub raw: String,
 }
 
+/// One row in the wikilink autocomplete dropdown. Versioned wire type.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct TitleHitV1 {
+    pub id: String,
+    pub title: String,
+}
+
+/// Wikilink autocomplete: case-insensitive title prefix search.
+/// Returns up to `limit` rows (capped at 50 in core::query). Empty
+/// `prefix` returns an empty list — the UI must not flood the dropdown
+/// with the entire vault.
+#[tauri::command]
+pub fn search_notes_by_title(
+    prefix: String,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<Vec<TitleHitV1>, IpcError> {
+    let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    let hits = query::search_by_title_prefix(&idx, &prefix, limit)
+        .map_err(|e| IpcError::io(e.to_string()))?;
+    Ok(hits
+        .into_iter()
+        .map(|h| TitleHitV1 {
+            id: h.id.to_string(),
+            title: h.title,
+        })
+        .collect())
+}
+
 /// Outbound links from a note — what this note links to.
 #[tauri::command]
 pub fn outbound_links_of(
@@ -433,5 +462,16 @@ mod tests {
         assert_eq!(json["source_title"], "Source");
         assert_eq!(json["source_preview"], "preview");
         assert_eq!(json["raw"], "[[Target]]");
+    }
+
+    #[test]
+    fn title_hit_serializes_with_id_and_title() {
+        let h = TitleHitV1 {
+            id: "01HXYZ0000000000000000000A".into(),
+            title: "Calculus".into(),
+        };
+        let json = serde_json::to_value(&h).unwrap();
+        assert_eq!(json["id"], "01HXYZ0000000000000000000A");
+        assert_eq!(json["title"], "Calculus");
     }
 }

@@ -107,6 +107,21 @@ export function setTags(id: NoteId, tags: string[]): Promise<void> {
 	return transport<void>('set_tags', { id, tags });
 }
 
+// ─── Wikilink autocomplete (M3) ────────────────────────────────────────────
+
+export interface TitleHit {
+	id: NoteId;
+	title: string;
+}
+
+/**
+ * Case-insensitive title-prefix search for the wikilink autocomplete.
+ * Empty `prefix` returns []; backend caps `limit` at 50.
+ */
+export function searchNotesByTitle(prefix: string, limit = 8): Promise<TitleHit[]> {
+	return transport<TitleHit[]>('search_notes_by_title', { prefix, limit });
+}
+
 // ─── Wikilink graph (M3) ───────────────────────────────────────────────────
 
 export interface LinkRef {

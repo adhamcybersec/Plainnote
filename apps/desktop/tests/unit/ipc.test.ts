@@ -7,12 +7,13 @@ import {
 	listTags,
 	queryNotes,
 	setTags,
+	searchNotesByTitle,
 	outboundLinksOf,
 	backlinksFor,
 	setIpcTransport,
 	DEFAULT_QUERY_MODE
 } from '$lib/ipc';
-import type { NoteSummary, Note, TagRow, LinkRef, Backlink } from '$lib/ipc';
+import type { NoteSummary, Note, TagRow, LinkRef, Backlink, TitleHit } from '$lib/ipc';
 
 interface InvokeCall {
 	cmd: string;
@@ -145,6 +146,28 @@ describe('ipc layer', () => {
 			cmd: 'set_tags',
 			args: { id: '01HXYZ0000000000000000000A', tags: ['a', 'b'] }
 		});
+	});
+
+	it('searchNotesByTitle forwards prefix + default limit and returns typed TitleHit[]', async () => {
+		const fixture: TitleHit[] = [
+			{ id: '01HABC0000000000000000000A', title: 'Calculus' },
+			{ id: '01HABC0000000000000000000B', title: 'calculus II' }
+		];
+		const { t, calls } = mockTransport({ search_notes_by_title: fixture });
+		setIpcTransport(t);
+		const result = await searchNotesByTitle('cal');
+		expect(result).toEqual(fixture);
+		expect(calls[0]).toEqual({
+			cmd: 'search_notes_by_title',
+			args: { prefix: 'cal', limit: 8 }
+		});
+	});
+
+	it('searchNotesByTitle accepts a custom limit', async () => {
+		const { t, calls } = mockTransport({ search_notes_by_title: [] });
+		setIpcTransport(t);
+		await searchNotesByTitle('q', 3);
+		expect(calls[0].args).toEqual({ prefix: 'q', limit: 3 });
 	});
 
 	it('outboundLinksOf forwards the id and returns typed LinkRef[]', async () => {

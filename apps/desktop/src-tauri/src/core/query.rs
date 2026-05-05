@@ -34,6 +34,56 @@ pub enum QueryMode {
     RecursiveUnion,
 }
 
+/// One row returned by `search_by_title_prefix`. Light enough for the
+/// autocomplete dropdown — we only need the title to display and the id
+/// to insert as `[[<ulid>]]` so the link is rename-stable (ADR forthcoming).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleHit {
+    pub id: NoteId,
+    pub title: String,
+}
+
+/// Case-insensitive title-prefix search. Empty prefix returns no rows
+/// (autocomplete should not flood the user with the entire vault).
+/// Notes with NULL title are excluded — there's nothing to match on.
+/// Results are sorted alphabetically by title; `limit` capped at 50.
+pub fn search_by_title_prefix(
+    index: &Index,
+    prefix: &str,
+    limit: usize,
+) -> Result<Vec<TitleHit>, QueryError> {
+    if prefix.is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = limit.min(50) as i64;
+    // LIKE pattern: escape user-controlled `%`, `_`, `\` so a query for "10%"
+    // matches a literal `10%` not "any 10-prefixed string".
+    let escaped = prefix
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("{escaped}%");
+    let mut stmt = index.conn().prepare(
+        "SELECT id, title FROM note_index
+         WHERE title IS NOT NULL AND title LIKE ?1 ESCAPE '\\'
+         COLLATE NOCASE
+         ORDER BY title COLLATE NOCASE
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![pattern, limit], |row| {
+        let id_str: String = row.get(0)?;
+        let title: String = row.get(1)?;
+        Ok((id_str, title))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        let (id_str, title) = r?;
+        let id = NoteId::parse(&id_str).map_err(|e| QueryError::InvalidId(e.to_string()))?;
+        out.push(TitleHit { id, title });
+    }
+    Ok(out)
+}
+
 /// Run a tag query in `mode` over the index. Returns matching note ids
 /// ordered by `created` descending (newest first) so the timeline view can
 /// render directly without a re-sort.
@@ -555,6 +605,97 @@ mod tests {
         )
         .unwrap();
         assert_eq!(as_set(a), as_set(b));
+    }
+
+    // ─── search_by_title_prefix (M3-T5) ─────────────────────────────────
+
+    fn title_fixture() -> (tempfile::TempDir, Index) {
+        // Six notes with titles spanning case, prefix overlap, and one
+        // note with title=None to confirm NULL exclusion.
+        use crate::core::vault::Vault;
+        let dir = tempdir().unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        for t in &[
+            Some("Calculus"),
+            Some("calculus II"),
+            Some("Cosmology"),
+            Some("Quantum"),
+            Some("Bayes' Theorem"),
+            None, // untitled note must never appear
+        ] {
+            vault.save_note("body", t.map(|s| s.to_string())).unwrap();
+        }
+        let mut idx = Index::open(&dir.path().join(".index/notes.sqlite")).unwrap();
+        idx.reconcile_with_vault(&vault).unwrap();
+        (dir, idx)
+    }
+
+    #[test]
+    fn empty_prefix_returns_no_rows() {
+        let (_dir, idx) = title_fixture();
+        let hits = search_by_title_prefix(&idx, "", 8).unwrap();
+        assert!(hits.is_empty(), "got {hits:?}");
+    }
+
+    #[test]
+    fn prefix_search_is_case_insensitive() {
+        let (_dir, idx) = title_fixture();
+        let hits = search_by_title_prefix(&idx, "cal", 8).unwrap();
+        let titles: Vec<&str> = hits.iter().map(|h| h.title.as_str()).collect();
+        // Both `Calculus` and `calculus II` must surface regardless of input case.
+        assert!(titles.contains(&"Calculus"), "got {titles:?}");
+        assert!(titles.contains(&"calculus II"), "got {titles:?}");
+    }
+
+    #[test]
+    fn results_are_alphabetic_by_title() {
+        // Stable order so the dropdown does not jitter across calls.
+        let (_dir, idx) = title_fixture();
+        let hits = search_by_title_prefix(&idx, "c", 8).unwrap();
+        let titles: Vec<String> = hits.iter().map(|h| h.title.to_lowercase()).collect();
+        let mut sorted = titles.clone();
+        sorted.sort();
+        assert_eq!(titles, sorted);
+    }
+
+    #[test]
+    fn limit_caps_result_count() {
+        let (_dir, idx) = title_fixture();
+        let hits = search_by_title_prefix(&idx, "c", 2).unwrap();
+        assert!(hits.len() <= 2, "got {} hits", hits.len());
+    }
+
+    #[test]
+    fn excludes_notes_with_null_title() {
+        // The NULL-title note must never contribute to autocomplete; there's
+        // nothing to render and the UI would show a blank row.
+        let (_dir, idx) = title_fixture();
+        let hits = search_by_title_prefix(&idx, "b", 8).unwrap();
+        // Only "Bayes' Theorem" matches `b`; the untitled note must not.
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Bayes' Theorem");
+    }
+
+    #[test]
+    fn like_metacharacters_are_escaped() {
+        // A user typing `%` or `_` must search for those literal chars,
+        // not SQL wildcards.
+        use crate::core::vault::Vault;
+        let dir = tempdir().unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        vault
+            .save_note("body", Some("100% pure".to_string()))
+            .unwrap();
+        vault
+            .save_note("body", Some("anyword".to_string()))
+            .unwrap();
+        let mut idx = Index::open(&dir.path().join(".index/notes.sqlite")).unwrap();
+        idx.reconcile_with_vault(&vault).unwrap();
+        let hits = search_by_title_prefix(&idx, "100%", 8).unwrap();
+        // Without ESCAPE handling, `100%` would match anything starting with
+        // `100`. With our LIKE_ESCAPE this returns only the literal-`%` row.
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "100% pure");
     }
 
     #[test]

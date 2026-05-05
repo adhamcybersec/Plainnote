@@ -63,6 +63,7 @@ pub fn run() {
             commands::list_tags,
             commands::query_notes,
             commands::set_tags,
+            commands::search_notes_by_title,
             commands::outbound_links_of,
             commands::backlinks_for,
         ])
