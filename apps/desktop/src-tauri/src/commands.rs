@@ -5,7 +5,7 @@
 //! beyond the entry point. All real logic lives in `crate::core` and is
 //! unit-testable without launching a webview (ADR-003).
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::State;
 
 use crate::core::ids::NoteId;
@@ -15,7 +15,7 @@ use crate::core::vault::{NoteSummary, Vault};
 /// Application state shared across Tauri commands.
 pub struct AppState {
     pub vault: Vault,
-    pub index: Mutex<Index>,
+    pub index: Arc<Mutex<Index>>,
 }
 
 /// Versioned wire types. Bumping a struct version is part of the IPC

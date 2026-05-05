@@ -2,12 +2,14 @@
 pub mod commands;
 pub mod core;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::Manager;
 
 use crate::commands::AppState;
 use crate::core::index::Index;
 use crate::core::vault::Vault;
+use crate::core::watcher::Watcher;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,12 +27,32 @@ pub fn run() {
             let index_path = vault_root.join(".index/notes.sqlite");
             let mut index = Index::open(&index_path).expect("index open failed");
             // Cold-path reconcile so external edits since last shutdown surface.
+            // The manifest-hash short-circuit makes this fast on unchanged vaults.
             let _ = index.reconcile_with_vault(&vault);
 
+            let index_arc = Arc::new(Mutex::new(index));
             app.manage(AppState {
-                vault,
-                index: Mutex::new(index),
+                vault: vault.clone(),
+                index: index_arc.clone(),
             });
+
+            // Spawn the filesystem watcher. Every debounced event triggers a
+            // reconcile under the index mutex. Watcher itself is owned by the
+            // app handle so it lives for the program's lifetime.
+            let (watcher, mut rx) = Watcher::start(vault.root_path(), Duration::from_millis(200))
+                .expect("watcher start");
+            app.manage(WatcherHandle(watcher));
+
+            let vault_for_worker = vault.clone();
+            let index_for_worker = index_arc.clone();
+            tauri::async_runtime::spawn(async move {
+                while rx.recv().await.is_some() {
+                    if let Ok(mut idx) = index_for_worker.lock() {
+                        let _ = idx.reconcile_with_vault(&vault_for_worker);
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -42,3 +64,7 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+/// Holds the Watcher so it stays alive for the lifetime of the Tauri app.
+/// Dropping it stops the filesystem listener.
+struct WatcherHandle(#[allow(dead_code)] Watcher);
