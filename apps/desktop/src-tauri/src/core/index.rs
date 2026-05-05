@@ -128,6 +128,34 @@ const MIGRATIONS: &[&str] = &[
         sha256 BLOB NOT NULL
     ) STRICT;
     "#,
+    // 2: tag system. The closure table makes the four-mode query algebra
+    // (M2) O(matches) at runtime — no recursion. Adding a new tag requires
+    // both a row in `tag` and ancestor-chain rows in `tag_closure`; that
+    // logic lives in core::tags::ensure_tag, not in the migration.
+    r#"
+    CREATE TABLE tag (
+        path TEXT PRIMARY KEY,                 -- 'learning/mathematics/calculus'
+        parent TEXT REFERENCES tag(path)       -- 'learning/mathematics' (NULL for roots)
+    ) STRICT;
+
+    CREATE TABLE tag_closure (
+        ancestor TEXT NOT NULL,
+        descendant TEXT NOT NULL,
+        depth INTEGER NOT NULL,                -- 0 = self
+        PRIMARY KEY (ancestor, descendant)
+    ) STRICT;
+
+    CREATE INDEX idx_closure_ancestor ON tag_closure(ancestor);
+    CREATE INDEX idx_closure_descendant ON tag_closure(descendant);
+
+    CREATE TABLE note_tag (
+        note_id TEXT NOT NULL,
+        tag_path TEXT NOT NULL,
+        PRIMARY KEY (note_id, tag_path)
+    ) STRICT;
+
+    CREATE INDEX idx_note_tag_path ON note_tag(tag_path);
+    "#,
 ];
 
 impl Index {
@@ -419,11 +447,14 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_is_1_after_first_open() {
+    fn schema_version_matches_migrations_count_after_first_open() {
+        // Opening a fresh DB applies every migration, so version should be
+        // exactly the number of migrations defined. This way the test
+        // doesn't lie when a new migration is appended.
         let dir = tempdir().unwrap();
         let path = dir.path().join("v.sqlite");
         let idx = Index::open(&path).unwrap();
-        assert_eq!(idx.schema_version().unwrap(), 1);
+        assert_eq!(idx.schema_version().unwrap(), MIGRATIONS.len() as i64);
     }
 
     #[test]
@@ -436,7 +467,7 @@ mod tests {
             let _idx = Index::open(&path).unwrap();
         }
         let idx = Index::open(&path).expect("re-open must succeed");
-        assert_eq!(idx.schema_version().unwrap(), 1);
+        assert_eq!(idx.schema_version().unwrap(), MIGRATIONS.len() as i64);
         let tables = idx.list_tables().unwrap();
         assert!(tables.contains(&"note_index".to_string()));
     }
@@ -461,7 +492,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(v, "1");
+        assert_eq!(v, MIGRATIONS.len().to_string());
     }
 
     // ─── reconciliation tests (T7) ─────────────────────────────────────────
@@ -677,6 +708,62 @@ mod tests {
             summary.inserted + summary.updated + summary.deleted > 0,
             "manifest must invalidate when file size changes; summary={summary:?}"
         );
+    }
+
+    // ─── Tag schema (M2-T1) ─────────────────────────────────────────────
+
+    #[test]
+    fn tag_schema_tables_exist_after_migration() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("tags.sqlite");
+        let idx = Index::open(&path).expect("open with tag schema");
+        let tables = idx.list_tables().unwrap();
+        for name in ["tag", "tag_closure", "note_tag"] {
+            assert!(
+                tables.contains(&name.to_string()),
+                "missing {name}: {tables:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_version_is_2_after_tag_migration() {
+        // Bumping migrations must bump the recorded schema_version so future
+        // migrations apply on top, not from scratch.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("v.sqlite");
+        let idx = Index::open(&path).unwrap();
+        assert_eq!(idx.schema_version().unwrap(), 2);
+    }
+
+    #[test]
+    fn tag_closure_has_required_indexes() {
+        // Performance contract: queries on the closure table filter on
+        // ancestor (Branch lookup) and descendant (reverse Branch). Both
+        // need indexes for M2's <50ms-on-50k-notes budget.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("idx.sqlite");
+        let idx = Index::open(&path).unwrap();
+        let names: Vec<String> = idx
+            .conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for required in [
+            "idx_closure_ancestor",
+            "idx_closure_descendant",
+            "idx_note_tag_path",
+        ] {
+            assert!(
+                names.contains(&required.to_string()),
+                "missing index {required}: {names:?}"
+            );
+        }
     }
 
     #[test]
