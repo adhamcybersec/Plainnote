@@ -10,6 +10,7 @@ use tauri::State;
 
 use crate::core::ids::NoteId;
 use crate::core::index::Index;
+use crate::core::query::{self, QueryMode};
 use crate::core::vault::{NoteSummary, Vault};
 
 /// Application state shared across Tauri commands.
@@ -143,6 +144,109 @@ pub fn read_note(id: String, state: State<'_, AppState>) -> Result<NoteV1, IpcEr
     })
 }
 
+/// One row in the flat tag tree returned by `list_tags`. Frontend builds
+/// the tree from these by joining on `parent`.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct TagRowV1 {
+    pub path: String,
+    pub parent: Option<String>,
+    pub note_count: i64,
+}
+
+/// List every tag in the index along with its parent and the count of
+/// notes whose `note_tag` row matches the tag literally.
+#[tauri::command]
+pub fn list_tags(state: State<'_, AppState>) -> Result<Vec<TagRowV1>, IpcError> {
+    let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    let mut stmt = idx
+        .conn()
+        .prepare(
+            "SELECT t.path, t.parent,
+                    (SELECT COUNT(*) FROM note_tag nt WHERE nt.tag_path = t.path) AS note_count
+             FROM tag t
+             ORDER BY t.path",
+        )
+        .map_err(|e| IpcError::io(e.to_string()))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(TagRowV1 {
+                path: row.get(0)?,
+                parent: row.get(1)?,
+                note_count: row.get(2)?,
+            })
+        })
+        .map_err(|e| IpcError::io(e.to_string()))?;
+    let out: Vec<TagRowV1> = rows.filter_map(|r| r.ok()).collect();
+    Ok(out)
+}
+
+/// Run a four-mode tag query and return matching note summaries (newest
+/// first). Wire mode strings: "strict_intersection", "recursive_intersection"
+/// (default), "strict_union", "recursive_union".
+#[tauri::command]
+pub fn query_notes(
+    tags: Vec<String>,
+    mode: Option<QueryMode>,
+    state: State<'_, AppState>,
+) -> Result<Vec<NoteSummaryV1>, IpcError> {
+    let mode = mode.unwrap_or_default();
+    let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    let ids = query::find_notes(&idx, &tags, mode).map_err(|e| IpcError::io(e.to_string()))?;
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Build the summary list directly from note_index — cheap, doesn't read
+    // .md bodies. The frontmatter for `tags` would require a vault read; we
+    // return only what NoteSummary already exposes in the chronological view.
+    let placeholders = (1..=ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT id, title, created, updated, body_preview
+         FROM note_index
+         WHERE id IN ({placeholders})
+         ORDER BY created DESC"
+    );
+    let mut stmt = idx
+        .conn()
+        .prepare(&sql)
+        .map_err(|e| IpcError::io(e.to_string()))?;
+    let id_strs: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
+    let raw_params: Vec<&dyn rusqlite::ToSql> =
+        id_strs.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let summaries: Vec<NoteSummaryV1> = stmt
+        .query_map(rusqlite::params_from_iter(raw_params), |row| {
+            Ok(NoteSummaryV1 {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                created: row.get(2)?,
+                updated: row.get(3)?,
+                preview: row.get(4)?,
+            })
+        })
+        .map_err(|e| IpcError::io(e.to_string()))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(summaries)
+}
+
+/// Replace the tag set on a note. Triggers reconciliation so the index
+/// catches up immediately.
+#[tauri::command]
+pub fn set_tags(id: String, tags: Vec<String>, state: State<'_, AppState>) -> Result<(), IpcError> {
+    let id = NoteId::parse(&id).map_err(|e| IpcError::invalid(e.to_string()))?;
+    state
+        .vault
+        .set_tags(&id, tags)
+        .map_err(|e| IpcError::io(e.to_string()))?;
+    let mut idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    idx.reconcile_with_vault(&state.vault)
+        .map_err(|e| IpcError::io(e.to_string()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +283,44 @@ mod tests {
     fn ping_returns_pong() {
         // Sanity: the M0 ping/pong baseline survives the M1a refactor.
         assert_eq!(ping(), "pong");
+    }
+
+    #[test]
+    fn tag_row_serializes_with_path_parent_count() {
+        let row = TagRowV1 {
+            path: "learning/math".into(),
+            parent: Some("learning".into()),
+            note_count: 3,
+        };
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["path"], "learning/math");
+        assert_eq!(json["parent"], "learning");
+        assert_eq!(json["note_count"], 3);
+    }
+
+    #[test]
+    fn tag_row_serializes_root_with_null_parent() {
+        let row = TagRowV1 {
+            path: "learning".into(),
+            parent: None,
+            note_count: 0,
+        };
+        let json = serde_json::to_value(&row).unwrap();
+        assert!(json["parent"].is_null());
+    }
+
+    #[test]
+    fn query_mode_serializes_as_snake_case() {
+        // Frontend will send strings like "recursive_intersection".
+        let m = QueryMode::RecursiveIntersection;
+        assert_eq!(serde_json::to_value(m).unwrap(), "recursive_intersection");
+        let m = QueryMode::StrictUnion;
+        assert_eq!(serde_json::to_value(m).unwrap(), "strict_union");
+    }
+
+    #[test]
+    fn query_mode_deserializes_from_snake_case() {
+        let m: QueryMode = serde_json::from_str("\"recursive_union\"").unwrap();
+        assert_eq!(m, QueryMode::RecursiveUnion);
     }
 }
