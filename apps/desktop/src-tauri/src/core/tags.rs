@@ -98,7 +98,6 @@ pub fn ensure_tag(index: &mut Index, path: &str) -> Result<(), TagError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::params;
     use tempfile::tempdir;
 
     fn open_index_with_tag_schema() -> (tempfile::TempDir, crate::core::index::Index) {

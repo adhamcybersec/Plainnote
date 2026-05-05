@@ -30,6 +30,9 @@ pub struct Index {
 
 impl Index {
     /// Crate-internal connection accessor for `core::tags` and `core::query`.
+    /// `conn()` is read-only access used by query.rs in M2 — tagged
+    /// allow(dead_code) until those callers land so clippy stays green.
+    #[allow(dead_code)]
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
     }
