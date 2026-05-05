@@ -71,3 +71,38 @@ export function listNotes(limit: number): Promise<NoteSummary[]> {
 export function readNote(id: NoteId): Promise<Note> {
 	return transport<Note>('read_note', { id });
 }
+
+// ─── Tag system (M2) ───────────────────────────────────────────────────────
+
+export type QueryMode =
+	| 'strict_intersection'
+	| 'recursive_intersection'
+	| 'strict_union'
+	| 'recursive_union';
+
+/** SPEC §5 default. */
+export const DEFAULT_QUERY_MODE: QueryMode = 'recursive_intersection';
+
+export interface TagRow {
+	path: string;
+	parent: string | null;
+	note_count: number;
+}
+
+/** Flat list of every tag in the index. Frontend builds the tree by joining on `parent`. */
+export function listTags(): Promise<TagRow[]> {
+	return transport<TagRow[]>('list_tags');
+}
+
+/** Run a four-mode tag query. `mode` defaults to RecursiveIntersection on the Rust side. */
+export function queryNotes(
+	tags: string[],
+	mode: QueryMode = DEFAULT_QUERY_MODE
+): Promise<NoteSummary[]> {
+	return transport<NoteSummary[]>('query_notes', { tags, mode });
+}
+
+/** Replace the tag set on a note. */
+export function setTags(id: NoteId, tags: string[]): Promise<void> {
+	return transport<void>('set_tags', { id, tags });
+}

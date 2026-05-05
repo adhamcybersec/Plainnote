@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { ping, saveNote, listNotes, readNote, setIpcTransport } from '$lib/ipc';
-import type { NoteSummary, Note } from '$lib/ipc';
+import {
+	ping,
+	saveNote,
+	listNotes,
+	readNote,
+	listTags,
+	queryNotes,
+	setTags,
+	setIpcTransport,
+	DEFAULT_QUERY_MODE
+} from '$lib/ipc';
+import type { NoteSummary, Note, TagRow } from '$lib/ipc';
 
 interface InvokeCall {
 	cmd: string;
@@ -83,6 +93,55 @@ describe('ipc layer', () => {
 		expect(calls[0]).toEqual({
 			cmd: 'read_note',
 			args: { id: '01HXYZ0000000000000000000A' }
+		});
+	});
+
+	it('listTags forwards to list_tags and returns typed rows', async () => {
+		const fixture: TagRow[] = [
+			{ path: 'learning', parent: null, note_count: 0 },
+			{ path: 'learning/math', parent: 'learning', note_count: 2 }
+		];
+		const { t, calls } = mockTransport({ list_tags: fixture });
+		setIpcTransport(t);
+		const result = await listTags();
+		expect(result).toEqual(fixture);
+		expect(calls[0]).toEqual({ cmd: 'list_tags', args: undefined });
+	});
+
+	it('queryNotes sends tags and the default mode when mode is omitted', async () => {
+		const fixture: NoteSummary[] = [];
+		const { t, calls } = mockTransport({ query_notes: fixture });
+		setIpcTransport(t);
+		await queryNotes(['learning/math', 'work']);
+		expect(calls[0]).toEqual({
+			cmd: 'query_notes',
+			args: { tags: ['learning/math', 'work'], mode: DEFAULT_QUERY_MODE }
+		});
+		expect(DEFAULT_QUERY_MODE).toBe('recursive_intersection');
+	});
+
+	it('queryNotes accepts each of the four modes', async () => {
+		const { t, calls } = mockTransport({ query_notes: [] });
+		setIpcTransport(t);
+		const modes = [
+			'strict_intersection',
+			'recursive_intersection',
+			'strict_union',
+			'recursive_union'
+		] as const;
+		for (const m of modes) {
+			await queryNotes(['x'], m);
+		}
+		expect(calls.map((c) => (c.args as { mode: string }).mode)).toEqual([...modes]);
+	});
+
+	it('setTags forwards id and tags', async () => {
+		const { t, calls } = mockTransport({ set_tags: null });
+		setIpcTransport(t);
+		await setTags('01HXYZ0000000000000000000A', ['a', 'b']);
+		expect(calls[0]).toEqual({
+			cmd: 'set_tags',
+			args: { id: '01HXYZ0000000000000000000A', tags: ['a', 'b'] }
 		});
 	});
 
