@@ -415,3 +415,33 @@ body {
 	background: var(--surface-2);
 	color: var(--ink-2);
 }
+
+/* ─── Library v2 layout (M2) ─── */
+
+.pn-library2 {
+	display: grid;
+	grid-template-columns: 260px 1fr;
+	gap: var(--s-6);
+	max-width: 1200px;
+	margin: 0 auto;
+	padding: var(--s-8) var(--s-6);
+	min-height: 100%;
+}
+.pn-library2__tags {
+	border-right: 1px solid var(--rule);
+	padding-right: var(--s-3);
+}
+.pn-library2__h {
+	margin: 0 0 var(--s-3);
+	font-size: 13px;
+	font-weight: 500;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--ink-3);
+}
+.pn-library2__feed {
+	min-width: 0;
+}
+.pn-library2__modebar {
+	margin-bottom: var(--s-3);
+}

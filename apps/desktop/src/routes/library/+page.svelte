@@ -1,14 +1,31 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!--
-  Library list view (M1a slice).
-  Reverse-chronological list of saved notes. Click → focus route (M3).
-  Real timeline grouping headers and the four-mode tag filter ship in M2.
+  Library — three-pane equivalent for M2.
+    Left:   TagTree (multi-select, ctrl+click to extend)
+    Top:    ModeToggle (four-mode segmented control + literal hint)
+    Top-2:  FilterBar (active filter chips, removable)
+    Center: Timeline of matching notes (newest first)
+  When no tags are selected, the timeline shows all notes (chrono).
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { listNotes, type NoteSummary } from '$lib/ipc';
+	import {
+		listNotes,
+		listTags,
+		queryNotes,
+		DEFAULT_QUERY_MODE,
+		type NoteSummary,
+		type TagRow,
+		type QueryMode
+	} from '$lib/ipc';
+	import TagTree from '$lib/components/TagTree.svelte';
+	import ModeToggle from '$lib/components/ModeToggle.svelte';
+	import FilterBar from '$lib/components/FilterBar.svelte';
 
 	let summaries = $state<NoteSummary[]>([]);
+	let tagRows = $state<TagRow[]>([]);
+	let selectedTags = $state<string[]>([]);
+	let mode = $state<QueryMode>(DEFAULT_QUERY_MODE);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
 
@@ -29,48 +46,96 @@
 		return s.preview || '(no title)';
 	}
 
-	onMount(async () => {
+	async function refreshFeed() {
+		loading = true;
+		errorMessage = null;
 		try {
-			summaries = await listNotes(50);
+			summaries =
+				selectedTags.length === 0
+					? await listNotes(50)
+					: await queryNotes(selectedTags, mode);
 		} catch (e) {
 			const ipc = e as { message?: string };
 			errorMessage = ipc?.message ?? String(e);
 		} finally {
 			loading = false;
 		}
+	}
+
+	async function refreshTags() {
+		try {
+			tagRows = await listTags();
+		} catch (e) {
+			const ipc = e as { message?: string };
+			errorMessage = ipc?.message ?? String(e);
+		}
+	}
+
+	function onSelectionChange(next: string[]) {
+		selectedTags = next;
+		void refreshFeed();
+	}
+
+	function onModeChange(next: QueryMode) {
+		mode = next;
+		if (selectedTags.length > 0) void refreshFeed();
+	}
+
+	onMount(async () => {
+		await Promise.all([refreshFeed(), refreshTags()]);
 	});
 </script>
 
-<main class="pn-library">
-	<header class="pn-library__head">
-		<div>
-			<h1 class="pn-library__title">Library</h1>
-			<span class="pn-library__count" data-testid="count">
-				{#if loading}Loading…{:else}{summaries.length} {summaries.length === 1 ? 'note' : 'notes'}{/if}
-			</span>
-		</div>
-		<a class="pn-library__back" href="/">← Capture</a>
-	</header>
+<main class="pn-library2">
+	<aside class="pn-library2__tags">
+		<h2 class="pn-library2__h">Tags</h2>
+		<TagTree rows={tagRows} selected={selectedTags} {onSelectionChange} />
+	</aside>
 
-	{#if errorMessage}
-		<p class="pn-empty" data-testid="error">Error: {errorMessage}</p>
-	{:else if !loading && summaries.length === 0}
-		<p class="pn-empty" data-testid="empty">No notes yet. Open Capture and write something.</p>
-	{:else}
-		<ul class="pn-library__list" data-testid="list">
-			{#each summaries as note (note.id)}
-				<li>
-					<a class="pn-card" href="/note/{note.id}" data-testid="card">
-						<div class="pn-card__head">
-							<h2 class="pn-card__title">{displayTitle(note)}</h2>
-							<span class="pn-card__time">{relativeTime(note.created)}</span>
-						</div>
-						{#if note.preview && note.title && note.preview !== note.title}
-							<p class="pn-card__preview">{note.preview}</p>
-						{/if}
-					</a>
-				</li>
-			{/each}
-		</ul>
-	{/if}
+	<section class="pn-library2__feed">
+		<header class="pn-library__head">
+			<div>
+				<h1 class="pn-library__title">Library</h1>
+				<span class="pn-library__count" data-testid="count">
+					{#if loading}Loading…{:else}{summaries.length}
+						{summaries.length === 1 ? 'note' : 'notes'}{/if}
+				</span>
+			</div>
+			<a class="pn-library__back" href="/">← Capture</a>
+		</header>
+
+		<div class="pn-library2__modebar">
+			<ModeToggle {mode} {onModeChange} />
+		</div>
+
+		<FilterBar selected={selectedTags} {mode} {onSelectionChange} />
+
+		{#if errorMessage}
+			<p class="pn-empty" data-testid="error">Error: {errorMessage}</p>
+		{:else if !loading && summaries.length === 0}
+			<p class="pn-empty" data-testid="empty">
+				{#if selectedTags.length > 0}
+					No notes match this filter.
+				{:else}
+					No notes yet. Open Capture and write something.
+				{/if}
+			</p>
+		{:else}
+			<ul class="pn-library__list" data-testid="list">
+				{#each summaries as note (note.id)}
+					<li>
+						<a class="pn-card" href="/note/{note.id}" data-testid="card">
+							<div class="pn-card__head">
+								<h2 class="pn-card__title">{displayTitle(note)}</h2>
+								<span class="pn-card__time">{relativeTime(note.created)}</span>
+							</div>
+							{#if note.preview && note.title && note.preview !== note.title}
+								<p class="pn-card__preview">{note.preview}</p>
+							{/if}
+						</a>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</section>
 </main>
