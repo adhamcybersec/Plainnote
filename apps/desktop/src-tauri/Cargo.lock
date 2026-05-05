@@ -2534,7 +2534,6 @@ dependencies = [
  "criterion",
  "notify",
  "proptest",
- "regex",
  "rusqlite",
  "serde",
  "serde_json",

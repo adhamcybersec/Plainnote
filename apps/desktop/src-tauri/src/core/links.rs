@@ -3,14 +3,14 @@
 //!
 //! Plainnote uses Obsidian-style `[[…]]` syntax in note bodies:
 //!
-//!     [[Title]]                — link by exact title
-//!     [[Title|alias]]          — link with display alias
-//!     [[01HXYZ…]]              — link by ULID (rename-stable)
-//!     \[[not a link]]          — escaped, parser ignores
+//! - `[[Title]]` — link by exact title
+//! - `[[Title|alias]]` — link with display alias
+//! - `[[01HXYZ…]]` — link by ULID (rename-stable)
+//! - `\[[not a link]]` — escaped, parser ignores
 //!
 //! The parser returns a list of `Wikilink` records — the resolver in
-//! `links::resolve_target` (M3-T3) decides whether each one points to an
-//! actual note, an alias, or a dangling reference.
+//! the reconciler decides whether each one points to an actual note
+//! (by title or ULID) or a dangling reference (`target_id` is NULL).
 
 /// One parsed wikilink occurrence.
 #[derive(Debug, Clone, PartialEq, Eq)]

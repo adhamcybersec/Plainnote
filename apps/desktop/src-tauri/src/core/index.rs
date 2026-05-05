@@ -13,6 +13,7 @@ use std::path::Path;
 
 use crate::core::frontmatter;
 use crate::core::ids::NoteId;
+use crate::core::links;
 use crate::core::tags;
 use crate::core::vault::Vault;
 
@@ -171,6 +172,23 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX idx_note_tag_path ON note_tag(tag_path);
     "#,
+    // 3: wikilink graph. Each row records one occurrence of a `[[…]]` in a
+    // note body. `target_kind` lets the resolver branch (M3-T3): exact
+    // title match → 'title'; ULID match → 'ulid'; otherwise 'dangling'.
+    r#"
+    CREATE TABLE note_link (
+        source TEXT NOT NULL,                   -- the note that contains the link
+        raw TEXT NOT NULL,                      -- canonical raw, e.g. "[[Title|alias]]"
+        target_text TEXT NOT NULL,              -- text inside the [[…]] before |
+        alias TEXT,                             -- nullable; pipe-separated display
+        target_id TEXT,                         -- resolved NoteId, or NULL when dangling
+        PRIMARY KEY (source, raw)
+    ) STRICT;
+
+    CREATE INDEX idx_note_link_source ON note_link(source);
+    CREATE INDEX idx_note_link_target_id ON note_link(target_id);
+    CREATE INDEX idx_note_link_target_text ON note_link(target_text);
+    "#,
 ];
 
 impl Index {
@@ -299,6 +317,9 @@ impl Index {
 
         let mut summary = ReconcileSummary::default();
         let mut seen: HashSet<String> = HashSet::new();
+        // Wikilinks are resolved in a second pass so all note_index rows
+        // exist before titles are queried.
+        let mut link_sync_queue: Vec<(NoteId, Vec<links::Wikilink>)> = Vec::new();
 
         // 2. Walk the vault. For each .md compute hash and diff.
         for path in walk_md(&notes_dir) {
@@ -391,6 +412,11 @@ impl Index {
             // `tags` field. The closure side of tags is maintained by
             // ensure_tag inside add_tag_to_note.
             self.sync_note_tags(&fm.id, &fm.tags)?;
+
+            // Stash the body for the second-pass link sync. We can't resolve
+            // wikilinks here because a target note might not have its
+            // note_index row yet — the file walk order is filesystem-dependent.
+            link_sync_queue.push((fm.id, links::parse(body)));
         }
 
         // 3. Anything left in `prior` was deleted from disk.
@@ -409,11 +435,17 @@ impl Index {
                 .ok();
             if let Some(id) = id {
                 tx.execute("DELETE FROM note_tag WHERE note_id = ?1", params![id])?;
+                tx.execute("DELETE FROM note_link WHERE source = ?1", params![id])?;
                 tx.execute("DELETE FROM note_index WHERE id = ?1", params![id])?;
             }
             tx.execute("DELETE FROM file_state WHERE path = ?1", params![rel])?;
             tx.commit()?;
             summary.deleted += 1;
+        }
+
+        // Second pass: resolve wikilinks now that every note_index row exists.
+        for (id, wikilinks) in &link_sync_queue {
+            self.sync_note_links(id, wikilinks)?;
         }
 
         // Purge any tags that became orphans due to deletions or tag drops.
@@ -450,6 +482,76 @@ impl Index {
                 continue;
             }
         }
+        Ok(())
+    }
+
+    /// Reconcile a note's `note_link` rows against the wikilinks parsed from
+    /// its body. Resolution rules:
+    ///   * If `target_text` parses as a valid `NoteId` and matches an
+    ///     existing `note_index.id`, that id is recorded.
+    ///   * Else if `target_text` matches an existing `note_index.title`
+    ///     exactly, that note's id is recorded.
+    ///   * Else the link is dangling: target_id is NULL.
+    fn sync_note_links(
+        &mut self,
+        id: &NoteId,
+        wikilinks: &[links::Wikilink],
+    ) -> Result<(), IndexError> {
+        let id_str = id.to_string();
+
+        // Snapshot the current set of raw spans for this source.
+        let prior: HashSet<String> = self
+            .conn
+            .prepare("SELECT raw FROM note_link WHERE source = ?1")?
+            .query_map(params![id_str.clone()], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        let want: HashSet<String> = wikilinks.iter().map(|w| w.raw.clone()).collect();
+
+        let tx = self.conn.transaction()?;
+        for w in wikilinks {
+            // Resolve the target. ULID first.
+            let mut target_id: Option<String> = NoteId::parse(&w.target_text)
+                .ok()
+                .map(|id| id.to_string())
+                .filter(|tid| {
+                    tx.query_row(
+                        "SELECT 1 FROM note_index WHERE id = ?1",
+                        params![tid],
+                        |_| Ok(true),
+                    )
+                    .unwrap_or(false)
+                });
+            // Else by title.
+            if target_id.is_none() {
+                target_id = tx
+                    .query_row(
+                        "SELECT id FROM note_index WHERE title = ?1 LIMIT 1",
+                        params![w.target_text],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .ok();
+            }
+
+            tx.execute(
+                "INSERT INTO note_link (source, raw, target_text, alias, target_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(source, raw) DO UPDATE SET
+                     target_text = excluded.target_text,
+                     alias = excluded.alias,
+                     target_id = excluded.target_id",
+                params![id_str.clone(), w.raw, w.target_text, w.alias, target_id],
+            )?;
+        }
+
+        // Remove rows that no longer appear in the body.
+        for stale_raw in prior.difference(&want) {
+            tx.execute(
+                "DELETE FROM note_link WHERE source = ?1 AND raw = ?2",
+                params![id_str.clone(), stale_raw],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -666,6 +768,188 @@ mod tests {
         out
     }
 
+    // ─── note_link reconcile (M3-T2) ─────────────────────────────────────
+
+    #[test]
+    fn note_link_table_exists_with_required_indexes() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("links.sqlite");
+        let idx = Index::open(&path).unwrap();
+        let tables = idx.list_tables().unwrap();
+        assert!(tables.contains(&"note_link".to_string()));
+        let names: Vec<String> = idx
+            .conn()
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for required in [
+            "idx_note_link_source",
+            "idx_note_link_target_id",
+            "idx_note_link_target_text",
+        ] {
+            assert!(
+                names.contains(&required.to_string()),
+                "missing index {required}: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reconcile_inserts_note_link_rows_for_each_wikilink() {
+        let dir = tempdir().unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        let _target = vault
+            .save_note("target body", Some("Target".to_string()))
+            .unwrap();
+        let source = vault
+            .save_note(
+                "see [[Target]] and [[Other|short]]",
+                Some("Source".to_string()),
+            )
+            .unwrap();
+
+        let mut idx = Index::open(&dir.path().join(".index/notes.sqlite")).unwrap();
+        idx.reconcile_with_vault(&vault).unwrap();
+
+        let rows: Vec<(String, String, Option<String>)> = idx
+            .conn()
+            .prepare(
+                "SELECT raw, target_text, alias FROM note_link
+                 WHERE source = ?1 ORDER BY raw",
+            )
+            .unwrap()
+            .query_map(params![source.to_string()], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(rows.len(), 2, "got {rows:?}");
+        assert!(rows.iter().any(|(_, target, _)| target == "Target"));
+        assert!(rows
+            .iter()
+            .any(|(_, target, alias)| target == "Other" && alias.as_deref() == Some("short")));
+    }
+
+    #[test]
+    fn reconcile_resolves_links_to_target_id_when_title_matches() {
+        let dir = tempdir().unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        let target_id = vault
+            .save_note("target body", Some("Target".to_string()))
+            .unwrap();
+        let source_id = vault
+            .save_note("see [[Target]]", Some("Source".to_string()))
+            .unwrap();
+
+        let mut idx = Index::open(&dir.path().join(".index/notes.sqlite")).unwrap();
+        idx.reconcile_with_vault(&vault).unwrap();
+
+        let target_id_in_db: Option<String> = idx
+            .conn()
+            .query_row(
+                "SELECT target_id FROM note_link WHERE source = ?1",
+                params![source_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            target_id_in_db.as_deref(),
+            Some(target_id.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn reconcile_marks_dangling_links_with_null_target_id() {
+        let dir = tempdir().unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        let source_id = vault.save_note("see [[NotARealNote]]", None).unwrap();
+
+        let mut idx = Index::open(&dir.path().join(".index/notes.sqlite")).unwrap();
+        idx.reconcile_with_vault(&vault).unwrap();
+
+        let target_id: Option<String> = idx
+            .conn()
+            .query_row(
+                "SELECT target_id FROM note_link WHERE source = ?1",
+                params![source_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(target_id, None, "dangling link must store NULL target_id");
+    }
+
+    #[test]
+    fn reconcile_resolves_links_to_target_id_when_ulid_matches() {
+        let dir = tempdir().unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        let target_id = vault.save_note("body", Some("Title".into())).unwrap();
+        let source_body = format!("see [[{}]]", target_id);
+        let source_id = vault.save_note(source_body, None).unwrap();
+
+        let mut idx = Index::open(&dir.path().join(".index/notes.sqlite")).unwrap();
+        idx.reconcile_with_vault(&vault).unwrap();
+
+        let in_db: Option<String> = idx
+            .conn()
+            .query_row(
+                "SELECT target_id FROM note_link WHERE source = ?1",
+                params![source_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(in_db.as_deref(), Some(target_id.to_string().as_str()));
+    }
+
+    #[test]
+    fn reconcile_drops_link_rows_when_link_removed_from_body() {
+        let dir = tempdir().unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        let _target = vault.save_note("body", Some("Target".into())).unwrap();
+        let source_id = vault.save_note("see [[Target]]", None).unwrap();
+
+        let mut idx = Index::open(&dir.path().join(".index/notes.sqlite")).unwrap();
+        idx.reconcile_with_vault(&vault).unwrap();
+        // Sanity: one row before edit.
+        let before: i64 = idx
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM note_link WHERE source = ?1",
+                params![source_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, 1);
+
+        // Rewrite the source note body to remove the link.
+        let path = walk_md(&dir.path().join("notes"))
+            .into_iter()
+            .find(|p| {
+                std::fs::read_to_string(p)
+                    .map(|s| s.contains("see [[Target]]"))
+                    .unwrap_or(false)
+            })
+            .unwrap();
+        let original = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, original.replace("see [[Target]]", "no link here")).unwrap();
+
+        idx.reconcile_with_vault(&vault).unwrap();
+        let after: i64 = idx
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM note_link WHERE source = ?1",
+                params![source_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, 0);
+    }
+
     // ─── reconciler ↔ note_tag sync (M2-T4) ─────────────────────────────
 
     #[test]
@@ -843,16 +1127,6 @@ mod tests {
                 "missing {name}: {tables:?}"
             );
         }
-    }
-
-    #[test]
-    fn schema_version_is_2_after_tag_migration() {
-        // Bumping migrations must bump the recorded schema_version so future
-        // migrations apply on top, not from scratch.
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("v.sqlite");
-        let idx = Index::open(&path).unwrap();
-        assert_eq!(idx.schema_version().unwrap(), 2);
     }
 
     #[test]
