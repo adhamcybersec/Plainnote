@@ -44,6 +44,17 @@ impl Index {
     }
 }
 
+/// One row in the wikilink graph as exposed by `Index::outbound_links_of_note`.
+/// Mirrors the wire-level `LinkRefV1` but stays free of Tauri types so the
+/// core layer is unit-testable in isolation (ADR-003).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkRow {
+    pub raw: String,
+    pub target_text: String,
+    pub alias: Option<String>,
+    pub target_id: Option<String>,
+}
+
 /// Counts of rows changed during a reconcile pass.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ReconcileSummary {
@@ -553,6 +564,43 @@ impl Index {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// One row in the outbound link graph: a wikilink occurrence in a note's
+    /// body, with its resolution state. `target_id` is `None` for dangling.
+    /// Public so integration tests can verify the wikilink graph at the
+    /// core layer without going through Tauri commands.
+    pub fn outbound_links_of_note(
+        &self,
+        source: &NoteId,
+    ) -> Result<Vec<LinkRow>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT raw, target_text, alias, target_id
+             FROM note_link
+             WHERE source = ?1
+             ORDER BY raw",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![source.to_string()], |row| {
+            Ok(LinkRow {
+                raw: row.get(0)?,
+                target_text: row.get(1)?,
+                alias: row.get(2)?,
+                target_id: row.get(3)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Source ids of every note that links *to* `target` via a resolved
+    /// `target_id` (renames followed via ULID per ADR-007).
+    pub fn backlinks_of_note(&self, target: &NoteId) -> Result<Vec<String>, IndexError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT source FROM note_link WHERE target_id = ?1 ORDER BY source",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![target.to_string()], |row| {
+            row.get::<_, String>(0)
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     /// Names of all user tables (for tests / debugging).
