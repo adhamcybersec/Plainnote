@@ -7,10 +7,12 @@ import {
 	listTags,
 	queryNotes,
 	setTags,
+	outboundLinksOf,
+	backlinksFor,
 	setIpcTransport,
 	DEFAULT_QUERY_MODE
 } from '$lib/ipc';
-import type { NoteSummary, Note, TagRow } from '$lib/ipc';
+import type { NoteSummary, Note, TagRow, LinkRef, Backlink } from '$lib/ipc';
 
 interface InvokeCall {
 	cmd: string;
@@ -142,6 +144,50 @@ describe('ipc layer', () => {
 		expect(calls[0]).toEqual({
 			cmd: 'set_tags',
 			args: { id: '01HXYZ0000000000000000000A', tags: ['a', 'b'] }
+		});
+	});
+
+	it('outboundLinksOf forwards the id and returns typed LinkRef[]', async () => {
+		const fixture: LinkRef[] = [
+			{
+				raw: '[[Target]]',
+				target_text: 'Target',
+				alias: null,
+				target_id: '01HABC0000000000000000000A'
+			},
+			{
+				raw: '[[Nope]]',
+				target_text: 'Nope',
+				alias: null,
+				target_id: null
+			}
+		];
+		const { t, calls } = mockTransport({ outbound_links_of: fixture });
+		setIpcTransport(t);
+		const result = await outboundLinksOf('01HXYZ0000000000000000000A');
+		expect(result).toEqual(fixture);
+		expect(calls[0]).toEqual({
+			cmd: 'outbound_links_of',
+			args: { id: '01HXYZ0000000000000000000A' }
+		});
+	});
+
+	it('backlinksFor forwards the id and returns typed Backlink[]', async () => {
+		const fixture: Backlink[] = [
+			{
+				source_id: '01HABC0000000000000000000A',
+				source_title: 'Source',
+				source_preview: 'preview',
+				raw: '[[Target]]'
+			}
+		];
+		const { t, calls } = mockTransport({ backlinks_for: fixture });
+		setIpcTransport(t);
+		const result = await backlinksFor('01HXYZ0000000000000000000A');
+		expect(result).toEqual(fixture);
+		expect(calls[0]).toEqual({
+			cmd: 'backlinks_for',
+			args: { id: '01HXYZ0000000000000000000A' }
 		});
 	});
 

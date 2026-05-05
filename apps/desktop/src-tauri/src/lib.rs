@@ -63,6 +63,8 @@ pub fn run() {
             commands::list_tags,
             commands::query_notes,
             commands::set_tags,
+            commands::outbound_links_of,
+            commands::backlinks_for,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

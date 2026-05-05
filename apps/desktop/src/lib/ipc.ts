@@ -106,3 +106,30 @@ export function queryNotes(
 export function setTags(id: NoteId, tags: string[]): Promise<void> {
 	return transport<void>('set_tags', { id, tags });
 }
+
+// ─── Wikilink graph (M3) ───────────────────────────────────────────────────
+
+export interface LinkRef {
+	raw: string;
+	target_text: string;
+	alias: string | null;
+	/** Resolved NoteId if the target exists; null for dangling links. */
+	target_id: NoteId | null;
+}
+
+export interface Backlink {
+	source_id: NoteId;
+	source_title: string | null;
+	source_preview: string;
+	raw: string;
+}
+
+/** Outbound wikilinks from a note. */
+export function outboundLinksOf(id: NoteId): Promise<LinkRef[]> {
+	return transport<LinkRef[]>('outbound_links_of', { id });
+}
+
+/** Notes that link *to* a given note (via resolved target_id). */
+export function backlinksFor(id: NoteId): Promise<Backlink[]> {
+	return transport<Backlink[]>('backlinks_for', { id });
+}

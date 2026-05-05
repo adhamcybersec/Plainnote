@@ -232,6 +232,88 @@ pub fn query_notes(
     Ok(summaries)
 }
 
+/// One outbound wikilink occurrence with its resolution state.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct LinkRefV1 {
+    pub raw: String,
+    pub target_text: String,
+    pub alias: Option<String>,
+    /// Resolved NoteId if the target exists; None for dangling links.
+    pub target_id: Option<String>,
+}
+
+/// One backlink occurrence: a note that links *to* the current one.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct BacklinkV1 {
+    /// The source note (the one containing the wikilink).
+    pub source_id: String,
+    pub source_title: Option<String>,
+    pub source_preview: String,
+    /// The raw `[[…]]` span in the source body.
+    pub raw: String,
+}
+
+/// Outbound links from a note — what this note links to.
+#[tauri::command]
+pub fn outbound_links_of(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<LinkRefV1>, IpcError> {
+    let id = NoteId::parse(&id).map_err(|e| IpcError::invalid(e.to_string()))?;
+    let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    let mut stmt = idx
+        .conn()
+        .prepare(
+            "SELECT raw, target_text, alias, target_id
+             FROM note_link
+             WHERE source = ?1
+             ORDER BY raw",
+        )
+        .map_err(|e| IpcError::io(e.to_string()))?;
+    let rows = stmt
+        .query_map(rusqlite::params![id.to_string()], |row| {
+            Ok(LinkRefV1 {
+                raw: row.get(0)?,
+                target_text: row.get(1)?,
+                alias: row.get(2)?,
+                target_id: row.get(3)?,
+            })
+        })
+        .map_err(|e| IpcError::io(e.to_string()))?;
+    let out: Vec<LinkRefV1> = rows.filter_map(|r| r.ok()).collect();
+    Ok(out)
+}
+
+/// Notes that link to this one (resolved via target_id, so renames are
+/// followed via ULID).
+#[tauri::command]
+pub fn backlinks_for(id: String, state: State<'_, AppState>) -> Result<Vec<BacklinkV1>, IpcError> {
+    let id = NoteId::parse(&id).map_err(|e| IpcError::invalid(e.to_string()))?;
+    let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    let mut stmt = idx
+        .conn()
+        .prepare(
+            "SELECT nl.source, ni.title, ni.body_preview, nl.raw
+             FROM note_link nl
+             JOIN note_index ni ON ni.id = nl.source
+             WHERE nl.target_id = ?1
+             ORDER BY ni.created DESC",
+        )
+        .map_err(|e| IpcError::io(e.to_string()))?;
+    let rows = stmt
+        .query_map(rusqlite::params![id.to_string()], |row| {
+            Ok(BacklinkV1 {
+                source_id: row.get(0)?,
+                source_title: row.get(1)?,
+                source_preview: row.get(2)?,
+                raw: row.get(3)?,
+            })
+        })
+        .map_err(|e| IpcError::io(e.to_string()))?;
+    let out: Vec<BacklinkV1> = rows.filter_map(|r| r.ok()).collect();
+    Ok(out)
+}
+
 /// Replace the tag set on a note. Triggers reconciliation so the index
 /// catches up immediately.
 #[tauri::command]
@@ -322,5 +404,34 @@ mod tests {
     fn query_mode_deserializes_from_snake_case() {
         let m: QueryMode = serde_json::from_str("\"recursive_union\"").unwrap();
         assert_eq!(m, QueryMode::RecursiveUnion);
+    }
+
+    #[test]
+    fn link_ref_serializes_with_target_id_null_for_dangling() {
+        let r = LinkRefV1 {
+            raw: "[[Nope]]".into(),
+            target_text: "Nope".into(),
+            alias: None,
+            target_id: None,
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["raw"], "[[Nope]]");
+        assert!(json["target_id"].is_null());
+        assert!(json["alias"].is_null());
+    }
+
+    #[test]
+    fn backlink_serializes_with_source_metadata() {
+        let b = BacklinkV1 {
+            source_id: "01HXYZ0000000000000000000A".into(),
+            source_title: Some("Source".into()),
+            source_preview: "preview".into(),
+            raw: "[[Target]]".into(),
+        };
+        let json = serde_json::to_value(&b).unwrap();
+        assert_eq!(json["source_id"], "01HXYZ0000000000000000000A");
+        assert_eq!(json["source_title"], "Source");
+        assert_eq!(json["source_preview"], "preview");
+        assert_eq!(json["raw"], "[[Target]]");
     }
 }
