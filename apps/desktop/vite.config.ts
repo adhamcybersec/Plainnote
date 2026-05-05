@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { defineConfig } from 'vitest/config';
 import { sveltekit } from '@sveltejs/kit/vite';
+import { svelteTesting } from '@testing-library/svelte/vite';
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -11,7 +12,7 @@ const host = process.env.TAURI_DEV_HOST;
 // after Svelte's preprocessor extracts the style block, so it sees correct
 // CSS. See docs/DECISIONS.md ADR-005.
 export default defineConfig({
-	plugins: [sveltekit()],
+	plugins: [sveltekit(), svelteTesting()],
 
 	// Tauri expects a fixed dev port and disables auto-open behavior
 	clearScreen: false,
@@ -34,7 +35,10 @@ export default defineConfig({
 		// Vitest configuration — see https://vitest.dev/config/
 		include: ['tests/unit/**/*.{test,spec}.{ts,js}', 'src/**/*.{test,spec}.{ts,js}'],
 		exclude: ['tests/e2e/**', 'node_modules/**', 'build/**', '.svelte-kit/**'],
-		environment: 'node',
+		// jsdom needed for Svelte component tests; pure-logic tests (e.g. ipc.test.ts)
+		// don't care about the environment.
+		environment: 'jsdom',
+		setupFiles: ['./tests/unit/setup.ts'],
 		// global test API; mirror Jest ergonomics so `expect`/`describe`/`it` are available without import
 		globals: true,
 		// CI-friendly defaults
