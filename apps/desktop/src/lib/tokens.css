@@ -107,3 +107,13 @@
 		--t-slow: 0ms;
 	}
 }
+
+/* CodeMirror editor — global styles, ADR-005 (no component-scoped style blocks). */
+.pn-editor .cm-editor {
+	height: 100%;
+	font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+	font-size: 14px;
+}
+.pn-editor .cm-editor.cm-focused {
+	outline: none;
+}
