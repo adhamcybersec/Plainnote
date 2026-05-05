@@ -39,6 +39,7 @@
 		wikilinkAutocomplete,
 		type TitleSearcher
 	} from '$lib/components/wikilink-autocomplete';
+	import { taskListToggle } from '$lib/components/task-list';
 
 	let {
 		value = '',
@@ -67,6 +68,7 @@
 					markdown(),
 					keymap.of([...defaultKeymap, ...historyKeymap]),
 					...(titleSearcher ? [wikilinkAutocomplete(titleSearcher)] : []),
+					taskListToggle(),
 					EditorView.updateListener.of((u) => {
 						if (u.docChanged) onChange(u.state.doc.toString());
 					})
