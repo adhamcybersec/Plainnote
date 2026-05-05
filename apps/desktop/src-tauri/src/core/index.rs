@@ -28,6 +28,16 @@ pub struct Index {
     conn: Connection,
 }
 
+impl Index {
+    /// Crate-internal connection accessor for `core::tags` and `core::query`.
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+    pub(crate) fn conn_mut(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
+}
+
 /// Counts of rows changed during a reconcile pass.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ReconcileSummary {

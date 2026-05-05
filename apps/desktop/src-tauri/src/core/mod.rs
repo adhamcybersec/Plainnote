@@ -8,5 +8,6 @@
 pub mod frontmatter;
 pub mod ids;
 pub mod index;
+pub mod tags;
 pub mod vault;
 pub mod watcher;
