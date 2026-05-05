@@ -12,6 +12,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::core::frontmatter;
+use crate::core::ids::NoteId;
+use crate::core::tags;
 use crate::core::vault::Vault;
 
 #[derive(Debug, thiserror::Error)]
@@ -384,6 +386,11 @@ impl Index {
             }
             tx.commit()?;
             prior.remove(&rel);
+
+            // Sync the note's tag associations against the frontmatter's
+            // `tags` field. The closure side of tags is maintained by
+            // ensure_tag inside add_tag_to_note.
+            self.sync_note_tags(&fm.id, &fm.tags)?;
         }
 
         // 3. Anything left in `prior` was deleted from disk.
@@ -401,6 +408,7 @@ impl Index {
                 )
                 .ok();
             if let Some(id) = id {
+                tx.execute("DELETE FROM note_tag WHERE note_id = ?1", params![id])?;
                 tx.execute("DELETE FROM note_index WHERE id = ?1", params![id])?;
             }
             tx.execute("DELETE FROM file_state WHERE path = ?1", params![rel])?;
@@ -408,10 +416,41 @@ impl Index {
             summary.deleted += 1;
         }
 
+        // Purge any tags that became orphans due to deletions or tag drops.
+        let _ = tags::purge_orphan_tags(self);
+
         // Persist the manifest so the next startup can short-circuit.
         self.store_manifest_hash(&manifest)?;
 
         Ok(summary)
+    }
+
+    /// Reconcile a note's `note_tag` rows against the supplied tag list.
+    /// Adds any new tags (calling `ensure_tag` for ancestors), removes any
+    /// associations that no longer appear in the list.
+    fn sync_note_tags(&mut self, id: &NoteId, desired: &[String]) -> Result<(), IndexError> {
+        let id_str = id.to_string();
+        let current: HashSet<String> = self
+            .conn
+            .prepare("SELECT tag_path FROM note_tag WHERE note_id = ?1")?
+            .query_map(params![id_str.clone()], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        let want: HashSet<String> = desired.iter().cloned().collect();
+
+        for to_add in want.difference(&current) {
+            // ensure_tag may fail if the path is malformed; treat as a soft
+            // skip so a single bad tag doesn't poison the whole reconcile.
+            if tags::add_tag_to_note(self, id, to_add).is_err() {
+                continue;
+            }
+        }
+        for to_remove in current.difference(&want) {
+            if tags::remove_tag_from_note(self, id, to_remove).is_err() {
+                continue;
+            }
+        }
+        Ok(())
     }
 
     /// Names of all user tables (for tests / debugging).
@@ -625,6 +664,73 @@ mod tests {
             }
         }
         out
+    }
+
+    // ─── reconciler ↔ note_tag sync (M2-T4) ─────────────────────────────
+
+    #[test]
+    fn reconcile_inserts_note_tag_rows_from_frontmatter() {
+        // RED: a vault note carries `tags: [learning/math]` in its
+        // frontmatter. After reconcile, note_tag must have that row and
+        // every ancestor must exist as a tag row.
+        let dir = tempdir().unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        let id = vault.save_note("body", None).unwrap();
+        vault
+            .set_tags(&id, vec!["learning/math/calculus".to_string()])
+            .expect("set tags");
+
+        let mut idx = Index::open(&dir.path().join(".index/notes.sqlite")).unwrap();
+        idx.reconcile_with_vault(&vault).unwrap();
+
+        let note_tag_rows: Vec<String> = idx
+            .conn()
+            .prepare("SELECT tag_path FROM note_tag WHERE note_id = ?1")
+            .unwrap()
+            .query_map(params![id.to_string()], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(note_tag_rows, vec!["learning/math/calculus".to_string()]);
+
+        let tag_count: i64 = idx
+            .conn()
+            .query_row("SELECT COUNT(*) FROM tag", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tag_count, 3); // learning + learning/math + learning/math/calculus
+    }
+
+    #[test]
+    fn reconcile_adds_new_tags_and_removes_dropped_ones() {
+        let dir = tempdir().unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        let id = vault.save_note("body", None).unwrap();
+        vault.set_tags(&id, vec!["a".into(), "b".into()]).unwrap();
+
+        let mut idx = Index::open(&dir.path().join(".index/notes.sqlite")).unwrap();
+        idx.reconcile_with_vault(&vault).unwrap();
+        let initial: Vec<String> = idx
+            .conn()
+            .prepare("SELECT tag_path FROM note_tag ORDER BY tag_path")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(initial, vec!["a".to_string(), "b".to_string()]);
+
+        // Drop b, add c — the reconciler must converge.
+        vault.set_tags(&id, vec!["a".into(), "c".into()]).unwrap();
+        idx.reconcile_with_vault(&vault).unwrap();
+        let after: Vec<String> = idx
+            .conn()
+            .prepare("SELECT tag_path FROM note_tag ORDER BY tag_path")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(after, vec!["a".to_string(), "c".to_string()]);
     }
 
     // ─── manifest-hash short-circuit (M1b-T2) ─────────────────────────────

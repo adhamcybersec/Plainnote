@@ -161,6 +161,26 @@ impl Vault {
         Ok(id)
     }
 
+    /// Replace the tag set on an existing note. Reads, mutates frontmatter,
+    /// rewrites atomically. The index picks up the change on next reconcile.
+    pub fn set_tags(&self, id: &NoteId, mut tags: Vec<String>) -> Result<(), VaultOpError> {
+        let path = self
+            .find_note_path(id)?
+            .ok_or(VaultOpError::NotFound(*id))?;
+        let bytes = fs::read(&path).map_err(VaultError::Io)?;
+        let source = String::from_utf8(bytes)?;
+        let (mut fm, body) = frontmatter::parse(&source)?;
+        tags.sort();
+        tags.dedup();
+        fm.tags = tags;
+        // Stamp `updated` so the manifest hash invalidates and the watcher
+        // picks the change up on its next pass.
+        fm.updated = format_iso8601_z(Utc::now());
+        let serialized = frontmatter::write(&fm, body)?;
+        atomic_write(&path, serialized.as_bytes())?;
+        Ok(())
+    }
+
     /// Read a note by id. Walks the date-partitioned dirs to find it.
     pub fn read_note(&self, id: &NoteId) -> Result<Note, VaultOpError> {
         let path = self
