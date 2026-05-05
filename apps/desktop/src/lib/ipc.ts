@@ -119,6 +119,41 @@ export function setMeta(key: string, value: string): Promise<void> {
 	return transport<void>('set_meta', { key, value });
 }
 
+// ─── Reminders (M6) ────────────────────────────────────────────────────────
+
+export type ReminderId = string;
+
+export interface Reminder {
+	id: ReminderId;
+	note_id: NoteId | null;
+	fire_at: string;
+	fired_at: string | null;
+	cancelled_at: string | null;
+	body: string;
+}
+
+export type ReminderFilter = 'active' | 'fired' | 'cancelled' | 'all';
+
+/** Schedule a reminder. fire_at must be ISO-8601 (any offset; backend canonicalizes to Z). */
+export function setReminder(
+	fireAt: string,
+	body: string,
+	noteId: NoteId | null = null
+): Promise<ReminderId> {
+	// Tauri 2 auto-converts camelCase JS keys to snake_case Rust args.
+	return transport<ReminderId>('set_reminder', { noteId, fireAt, body });
+}
+
+/** Mark a reminder cancelled. Errors with code='not_found' if already cancelled/fired. */
+export function cancelReminder(id: ReminderId): Promise<void> {
+	return transport<void>('cancel_reminder', { id });
+}
+
+/** List reminders. Default filter = 'active'. */
+export function listReminders(filter: ReminderFilter = 'active'): Promise<Reminder[]> {
+	return transport<Reminder[]>('list_reminders', { filter });
+}
+
 // ─── Graph view (M5) ───────────────────────────────────────────────────────
 
 export interface GraphNode {

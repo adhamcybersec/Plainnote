@@ -11,6 +11,9 @@ import {
 	getMeta,
 	setMeta,
 	graphData,
+	setReminder,
+	cancelReminder,
+	listReminders,
 	outboundLinksOf,
 	backlinksFor,
 	setIpcTransport,
@@ -23,7 +26,8 @@ import type {
 	LinkRef,
 	Backlink,
 	TitleHit,
-	GraphData
+	GraphData,
+	Reminder
 } from '$lib/ipc';
 
 interface InvokeCall {
@@ -221,6 +225,78 @@ describe('ipc layer', () => {
 		const result = await graphData();
 		expect(result).toEqual(fixture);
 		expect(calls[0]).toEqual({ cmd: 'graph_data', args: undefined });
+	});
+
+	it('setReminder forwards camelCase keys and returns the id', async () => {
+		// Per Tauri 2 default, JS keys are camelCase; the Rust side auto-
+		// converts to snake_case. Asserting the wire format here keeps the
+		// contract observable in tests.
+		const { t, calls } = mockTransport({
+			set_reminder: '01HABC0000000000000000000A'
+		});
+		setIpcTransport(t);
+		const id = await setReminder('2026-06-01T10:00:00Z', 'drink water', null);
+		expect(id).toBe('01HABC0000000000000000000A');
+		expect(calls[0]).toEqual({
+			cmd: 'set_reminder',
+			args: {
+				noteId: null,
+				fireAt: '2026-06-01T10:00:00Z',
+				body: 'drink water'
+			}
+		});
+	});
+
+	it('setReminder accepts a NoteId for note-attached reminders', async () => {
+		const { t, calls } = mockTransport({
+			set_reminder: '01HABC0000000000000000000A'
+		});
+		setIpcTransport(t);
+		await setReminder('2026-06-01T10:00:00Z', 'check prelim notes', '01HXYZ0000000000000000000A');
+		expect(calls[0].args).toMatchObject({ noteId: '01HXYZ0000000000000000000A' });
+	});
+
+	it('cancelReminder forwards the id', async () => {
+		const { t, calls } = mockTransport({ cancel_reminder: null });
+		setIpcTransport(t);
+		await cancelReminder('01HABC0000000000000000000A');
+		expect(calls[0]).toEqual({
+			cmd: 'cancel_reminder',
+			args: { id: '01HABC0000000000000000000A' }
+		});
+	});
+
+	it('listReminders defaults to active filter', async () => {
+		const fixture: Reminder[] = [
+			{
+				id: '01HABC0000000000000000000A',
+				note_id: null,
+				fire_at: '2026-06-01T10:00:00Z',
+				fired_at: null,
+				cancelled_at: null,
+				body: 'x'
+			}
+		];
+		const { t, calls } = mockTransport({ list_reminders: fixture });
+		setIpcTransport(t);
+		const result = await listReminders();
+		expect(result).toEqual(fixture);
+		expect(calls[0]).toEqual({
+			cmd: 'list_reminders',
+			args: { filter: 'active' }
+		});
+	});
+
+	it('listReminders accepts each filter value', async () => {
+		const { t, calls } = mockTransport({ list_reminders: [] });
+		setIpcTransport(t);
+		const filters = ['active', 'fired', 'cancelled', 'all'] as const;
+		for (const f of filters) {
+			await listReminders(f);
+		}
+		expect(calls.map((c) => (c.args as { filter: string }).filter)).toEqual([
+			...filters
+		]);
 	});
 
 	it('outboundLinksOf forwards the id and returns typed LinkRef[]', async () => {

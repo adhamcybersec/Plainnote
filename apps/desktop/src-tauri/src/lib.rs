@@ -83,6 +83,9 @@ pub fn run() {
             commands::get_meta,
             commands::set_meta,
             commands::graph_data,
+            commands::set_reminder,
+            commands::cancel_reminder,
+            commands::list_reminders,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

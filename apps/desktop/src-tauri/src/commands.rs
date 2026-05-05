@@ -13,6 +13,7 @@ use crate::core::ids::NoteId;
 use crate::core::index::Index;
 use crate::core::query::{self, QueryMode};
 use crate::core::reminder_scheduler::Wake;
+use crate::core::reminders::{self, ReminderFilter};
 use crate::core::vault::{NoteSummary, Vault};
 
 /// Application state shared across Tauri commands.
@@ -292,6 +293,108 @@ pub fn set_meta(key: String, value: String, state: State<'_, AppState>) -> Resul
         )
         .map_err(|e| IpcError::io(e.to_string()))?;
     Ok(())
+}
+
+/// One reminder row over the wire. Versioned.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ReminderV1 {
+    pub id: String,
+    pub note_id: Option<String>,
+    pub fire_at: String,
+    pub fired_at: Option<String>,
+    pub cancelled_at: Option<String>,
+    pub body: String,
+}
+
+/// Filter for `list_reminders`. Matches the Rust enum verbatim.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderFilterV1 {
+    #[default]
+    Active,
+    Fired,
+    Cancelled,
+    All,
+}
+
+impl From<ReminderFilterV1> for ReminderFilter {
+    fn from(f: ReminderFilterV1) -> Self {
+        match f {
+            ReminderFilterV1::Active => Self::Active,
+            ReminderFilterV1::Fired => Self::Fired,
+            ReminderFilterV1::Cancelled => Self::Cancelled,
+            ReminderFilterV1::All => Self::All,
+        }
+    }
+}
+
+impl From<reminders::Reminder> for ReminderV1 {
+    fn from(r: reminders::Reminder) -> Self {
+        Self {
+            id: r.id,
+            note_id: r.note_id.map(|n| n.to_string()),
+            fire_at: r.fire_at,
+            fired_at: r.fired_at,
+            cancelled_at: r.cancelled_at,
+            body: r.body,
+        }
+    }
+}
+
+/// Schedule a reminder. `note_id` is optional; the reminder fires
+/// regardless of whether the source note exists at fire_at.
+#[tauri::command]
+pub fn set_reminder(
+    note_id: Option<String>,
+    fire_at: String,
+    body: String,
+    state: State<'_, AppState>,
+) -> Result<String, IpcError> {
+    let parsed_note_id = match note_id {
+        Some(s) => Some(NoteId::parse(&s).map_err(|e| IpcError::invalid(e.to_string()))?),
+        None => None,
+    };
+    let id = {
+        let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+        reminders::create_reminder(&idx, parsed_note_id.as_ref(), &fire_at, &body)
+            .map_err(|e| match e {
+                reminders::ReminderError::InvalidTimestamp(m) => IpcError::invalid(m),
+                other => IpcError::io(other.to_string()),
+            })?
+    };
+    if let Some(tx) = &state.reminder_wake {
+        let _ = tx.send(Wake);
+    }
+    Ok(id)
+}
+
+/// Mark a reminder cancelled. Idempotent: cancelling an already-cancelled
+/// or fired reminder returns `not_found`.
+#[tauri::command]
+pub fn cancel_reminder(id: String, state: State<'_, AppState>) -> Result<(), IpcError> {
+    {
+        let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+        reminders::cancel_reminder(&idx, &id).map_err(|e| match e {
+            reminders::ReminderError::NotFound(m) => IpcError::not_found(m),
+            other => IpcError::io(other.to_string()),
+        })?;
+    }
+    if let Some(tx) = &state.reminder_wake {
+        let _ = tx.send(Wake);
+    }
+    Ok(())
+}
+
+/// List reminders, filtered. Defaults to Active.
+#[tauri::command]
+pub fn list_reminders(
+    filter: Option<ReminderFilterV1>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ReminderV1>, IpcError> {
+    let f = filter.unwrap_or_default().into();
+    let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    let rows = reminders::list_reminders(&idx, f).map_err(|e| IpcError::io(e.to_string()))?;
+    Ok(rows.into_iter().map(ReminderV1::from).collect())
 }
 
 /// One node in the graph view payload. Versioned wire type.
