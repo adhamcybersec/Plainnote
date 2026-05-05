@@ -1,0 +1,175 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Release workflow — builds AppImage + .deb on tag push, uploads both to a
+# GitHub Release alongside SHA256SUMS.
+#
+# Trigger: push a tag matching v*.*.* (e.g. v0.1.0, v0.1.1, v1.0.0-rc.1).
+# Manual dispatch is also wired so a maintainer can re-run a release
+# without re-tagging.
+#
+# Trusted-input policy (matches ci.yml):
+#   - All `${{ github.* }}` and `${{ inputs.* }}` values flow through `env:`
+#     blocks and are referenced as $VAR in shells. We never interpolate
+#     user-controlled strings directly into `run:` commands.
+#   - The git tag is constrained by the `tags:` filter to v*.*.*; the
+#     "Resolve version" step still validates the result with a regex
+#     before any side-effecting step runs.
+#   - Third-party actions are pinned by full SHA, not floating tags.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g. 0.1.0)'
+        required: true
+        default: '0.1.0'
+
+permissions:
+  contents: write   # needed to create the GitHub Release + upload assets
+
+jobs:
+  build-linux:
+    name: Build Linux artifacts
+    runs-on: ubuntu-22.04
+    env:
+      REF_NAME: ${{ github.ref_name }}
+      DISPATCH_VERSION: ${{ github.event.inputs.version }}
+      EVENT_NAME: ${{ github.event_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$DISPATCH_VERSION"
+          else
+            # Strip the leading 'v' from the tag name (e.g. v0.1.0 → 0.1.0).
+            VERSION="${REF_NAME#v}"
+          fi
+          # Validate semver-ish: digits.dot.digits.dot.digits with optional pre-release.
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$'; then
+            echo "::error::version '$VERSION' is not semver" && exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Building Plainnote v$VERSION"
+
+      - name: Stamp version into tauri.conf.json + Cargo.toml + package.json
+        run: |
+          set -euo pipefail
+          # tauri.conf.json — top-level "version" field.
+          python3 - <<'PY'
+          import json, os
+          v = os.environ['VERSION']
+          for path in (
+              'apps/desktop/src-tauri/tauri.conf.json',
+              'apps/desktop/package.json',
+          ):
+              with open(path) as f:
+                  data = json.load(f)
+              data['version'] = v
+              with open(path, 'w') as f:
+                  json.dump(data, f, indent=2)
+                  f.write('\n')
+          PY
+          # Cargo.toml — package.version (sed only, no formatting churn).
+          sed -i "s/^version = \"0\\.1\\.0-dev\"$/version = \"${VERSION}\"/" \
+            apps/desktop/src-tauri/Cargo.toml
+
+      - name: Install system dependencies (Ubuntu 22.04)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            fuse \
+            libfuse2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@21dc36fb71dd22e3317045c0c31a3f4249868b17  # 1.78
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: cargo-release-${{ runner.os }}-
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install npm deps
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Build Tauri bundles (AppImage + .deb)
+        working-directory: apps/desktop
+        run: npx tauri build --bundles appimage,deb
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p release-out
+          cp apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage release-out/
+          cp apps/desktop/src-tauri/target/release/bundle/deb/*.deb release-out/
+          ls -la release-out/
+
+      - name: Generate SHA256SUMS
+        working-directory: release-out
+        run: |
+          set -euo pipefail
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload artifacts (workflow run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: plainnote-linux-${{ env.VERSION }}
+          path: release-out/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create GitHub Release (tag push only)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Idempotent: create draft release if missing, then upload + clobber.
+          # GitHub auto-generates release notes from PRs/commits when the
+          # --generate-notes flag is passed.
+          if ! gh release view "$REF_NAME" >/dev/null 2>&1; then
+            gh release create "$REF_NAME" \
+              --title "Plainnote $REF_NAME" \
+              --generate-notes \
+              --draft
+          fi
+          gh release upload "$REF_NAME" release-out/* --clobber
