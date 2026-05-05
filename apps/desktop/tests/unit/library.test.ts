@@ -230,4 +230,37 @@ describe('Library list view', () => {
 			.filter((c) => c === 'list_notes' || c === 'query_notes');
 		expect(after[after.length - 1]).toBe('list_notes');
 	});
+
+	it('renders timeline group headings (M5-T1)', async () => {
+		// Two notes spanning today + yesterday. The Library should emit
+		// the literal labels in input order — proves wiring of groupByRecency.
+		const now = new Date();
+		const yesterday = new Date(now);
+		yesterday.setDate(now.getDate() - 1);
+		yesterday.setHours(12, 0, 0, 0);
+		const fixture = [
+			{
+				id: '01HXYZ0000000000000000000A',
+				title: 'today note',
+				created: now.toISOString(),
+				updated: now.toISOString(),
+				preview: ''
+			},
+			{
+				id: '01HXYZ0000000000000000000B',
+				title: 'yesterday note',
+				created: yesterday.toISOString(),
+				updated: yesterday.toISOString(),
+				preview: ''
+			}
+		];
+		const t = transportReturning(fixture);
+		setIpcTransport(t);
+		render(Library);
+		await waitFor(() => expect(screen.getAllByTestId('card')).toHaveLength(2));
+		const headings = screen
+			.getAllByTestId('timeline-heading')
+			.map((el) => el.textContent?.trim());
+		expect(headings).toEqual(['Today', 'Yesterday']);
+	});
 });

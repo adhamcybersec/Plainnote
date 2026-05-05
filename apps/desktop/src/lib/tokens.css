@@ -243,3 +243,26 @@
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+
+/* ─── Timeline groups (M5-T1) ─────────────────────────────────────────────── */
+.pn-timeline-group {
+	margin: 0 0 16px;
+}
+.pn-timeline-group__heading {
+	position: sticky;
+	top: 0;
+	background: var(--bg, #FBFAF7);
+	margin: 0;
+	padding: 8px 4px 4px;
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--text-muted, #666);
+	z-index: 1;
+}
+.pn-timeline-group__items {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}

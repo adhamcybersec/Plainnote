@@ -21,6 +21,7 @@
 	import TagTree from '$lib/components/TagTree.svelte';
 	import ModeToggle from '$lib/components/ModeToggle.svelte';
 	import FilterBar from '$lib/components/FilterBar.svelte';
+	import { groupByRecency } from '$lib/timeline';
 
 	let summaries = $state<NoteSummary[]>([]);
 	let tagRows = $state<TagRow[]>([]);
@@ -28,6 +29,7 @@
 	let mode = $state<QueryMode>(DEFAULT_QUERY_MODE);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
+	let timelineGroups = $derived(groupByRecency(summaries));
 
 	function relativeTime(iso: string): string {
 		const then = new Date(iso).getTime();
@@ -121,21 +123,30 @@
 				{/if}
 			</p>
 		{:else}
-			<ul class="pn-library__list" data-testid="list">
-				{#each summaries as note (note.id)}
-					<li>
-						<a class="pn-card" href="/note/{note.id}" data-testid="card">
-							<div class="pn-card__head">
-								<h2 class="pn-card__title">{displayTitle(note)}</h2>
-								<span class="pn-card__time">{relativeTime(note.created)}</span>
-							</div>
-							{#if note.preview && note.title && note.preview !== note.title}
-								<p class="pn-card__preview">{note.preview}</p>
-							{/if}
-						</a>
-					</li>
+			<div class="pn-library__list" data-testid="list">
+				{#each timelineGroups as group (group.label)}
+					<section class="pn-timeline-group" data-testid="timeline-group">
+						<h2 class="pn-timeline-group__heading" data-testid="timeline-heading">
+							{group.label}
+						</h2>
+						<ul class="pn-timeline-group__items">
+							{#each group.items as note (note.id)}
+								<li>
+									<a class="pn-card" href="/note/{note.id}" data-testid="card">
+										<div class="pn-card__head">
+											<h3 class="pn-card__title">{displayTitle(note)}</h3>
+											<span class="pn-card__time">{relativeTime(note.created)}</span>
+										</div>
+										{#if note.preview && note.title && note.preview !== note.title}
+											<p class="pn-card__preview">{note.preview}</p>
+										{/if}
+									</a>
+								</li>
+							{/each}
+						</ul>
+					</section>
 				{/each}
-			</ul>
+			</div>
 		{/if}
 	</section>
 </main>
