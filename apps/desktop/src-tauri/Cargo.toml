@@ -25,6 +25,8 @@ ulid = { version = "1", features = ["serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
+notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 
 [dev-dependencies]
 proptest = "1"
