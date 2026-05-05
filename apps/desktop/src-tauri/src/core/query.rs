@@ -48,9 +48,52 @@ pub fn find_notes(
     match mode {
         QueryMode::StrictIntersection => strict_intersection(index, tags),
         QueryMode::RecursiveIntersection => recursive_intersection(index, tags),
-        QueryMode::StrictUnion => Ok(Vec::new()), // M2-T7
-        QueryMode::RecursiveUnion => Ok(Vec::new()), // M2-T7
+        QueryMode::StrictUnion => strict_union(index, tags),
+        QueryMode::RecursiveUnion => recursive_union(index, tags),
     }
+}
+
+/// Notes carrying any literal tag in `tags`. Implemented as
+/// `WHERE tag_path IN (...)` and DISTINCT to dedupe.
+fn strict_union(index: &Index, tags: &[String]) -> Result<Vec<NoteId>, QueryError> {
+    let placeholders = (1..=tags.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!("SELECT DISTINCT note_id FROM note_tag WHERE tag_path IN ({placeholders})");
+    let conn = index.conn();
+    let mut stmt = conn.prepare(&sql)?;
+    let raw_params: Vec<&dyn rusqlite::ToSql> =
+        tags.iter().map(|t| t as &dyn rusqlite::ToSql).collect();
+    let ids: Vec<String> = stmt
+        .query_map(rusqlite::params_from_iter(raw_params), |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    order_by_created(index, ids)
+}
+
+/// Notes carrying any tag in any input tag's branch (Branch(T1) ∪ Branch(T2) ∪ ...).
+/// Implemented as a join through `tag_closure` with `ancestor IN (...)` and DISTINCT.
+fn recursive_union(index: &Index, tags: &[String]) -> Result<Vec<NoteId>, QueryError> {
+    let placeholders = (1..=tags.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT DISTINCT nt.note_id
+         FROM note_tag nt
+         JOIN tag_closure tc ON nt.tag_path = tc.descendant
+         WHERE tc.ancestor IN ({placeholders})"
+    );
+    let conn = index.conn();
+    let mut stmt = conn.prepare(&sql)?;
+    let raw_params: Vec<&dyn rusqlite::ToSql> =
+        tags.iter().map(|t| t as &dyn rusqlite::ToSql).collect();
+    let ids: Vec<String> = stmt
+        .query_map(rusqlite::params_from_iter(raw_params), |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    order_by_created(index, ids)
 }
 
 /// Notes tagged with **all** the literal tags in `tags`. Implemented as
@@ -339,6 +382,179 @@ mod tests {
         )
         .unwrap();
         assert!(result.is_empty());
+    }
+
+    // ─── Strict Union (M2-T7) ───────────────────────────────────────────
+
+    #[test]
+    fn strict_union_with_one_tag_matches_exact_tag_only() {
+        let (_dir, idx, ids) = fixture();
+        let result = find_notes(
+            &idx,
+            &["learning/mathematics/calculus".into()],
+            QueryMode::StrictUnion,
+        )
+        .unwrap();
+        let got = as_set(result);
+        // calc + cross both literally tagged calculus.
+        let want: std::collections::HashSet<String> =
+            [ids["calc"].to_string(), ids["cross"].to_string()]
+                .iter()
+                .cloned()
+                .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn strict_union_with_two_tags_matches_either() {
+        let (_dir, idx, ids) = fixture();
+        let result = find_notes(
+            &idx,
+            &[
+                "learning/mathematics/algebra".into(),
+                "work/projectTTK".into(),
+            ],
+            QueryMode::StrictUnion,
+        )
+        .unwrap();
+        let got = as_set(result);
+        // algebra (note 2), ttk (note 4), cross (note 5 has projectTTK).
+        let want: std::collections::HashSet<String> = [
+            ids["algebra"].to_string(),
+            ids["ttk"].to_string(),
+            ids["cross"].to_string(),
+        ]
+        .iter()
+        .cloned()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn strict_union_does_not_pull_descendants_via_ancestors() {
+        // 'learning/mathematics' is no note's literal tag.
+        let (_dir, idx, _) = fixture();
+        let result = find_notes(
+            &idx,
+            &["learning/mathematics".into()],
+            QueryMode::StrictUnion,
+        )
+        .unwrap();
+        assert!(
+            result.is_empty(),
+            "ancestor literal must not pull descendants: {result:?}"
+        );
+    }
+
+    #[test]
+    fn strict_union_dedupes_results() {
+        // A note tagged with two of the input tags must appear once.
+        let (_dir, idx, _) = fixture();
+        let result = find_notes(
+            &idx,
+            &[
+                "learning/mathematics/calculus".into(),
+                "work/projectTTK".into(),
+            ],
+            QueryMode::StrictUnion,
+        )
+        .unwrap();
+        let count = result.len();
+        let unique = as_set(result).len();
+        assert_eq!(count, unique, "results must be deduped");
+    }
+
+    // ─── Recursive Union (M2-T7) ────────────────────────────────────────
+
+    #[test]
+    fn recursive_union_with_one_root_returns_subtree() {
+        let (_dir, idx, ids) = fixture();
+        let result = find_notes(&idx, &["learning".into()], QueryMode::RecursiveUnion).unwrap();
+        let got = as_set(result);
+        let want: std::collections::HashSet<String> = [
+            ids["calc"].to_string(),
+            ids["algebra"].to_string(),
+            ids["physics"].to_string(),
+            ids["cross"].to_string(),
+        ]
+        .iter()
+        .cloned()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn recursive_union_with_two_branches_unions_subtrees() {
+        // 'learning/mathematics' ∪ 'work' should pull anything in either tree.
+        let (_dir, idx, ids) = fixture();
+        let result = find_notes(
+            &idx,
+            &["learning/mathematics".into(), "work".into()],
+            QueryMode::RecursiveUnion,
+        )
+        .unwrap();
+        let got = as_set(result);
+        // calc (math), algebra (math), ttk (work), cross (both).
+        let want: std::collections::HashSet<String> = [
+            ids["calc"].to_string(),
+            ids["algebra"].to_string(),
+            ids["ttk"].to_string(),
+            ids["cross"].to_string(),
+        ]
+        .iter()
+        .cloned()
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn recursive_union_dedupes_when_branches_overlap() {
+        // 'learning' ∪ 'learning/mathematics' overlaps; cross must not appear
+        // twice even though both branches match it.
+        let (_dir, idx, _) = fixture();
+        let result = find_notes(
+            &idx,
+            &["learning".into(), "learning/mathematics".into()],
+            QueryMode::RecursiveUnion,
+        )
+        .unwrap();
+        let count = result.len();
+        let unique = as_set(result).len();
+        assert_eq!(count, unique);
+    }
+
+    // ─── single-tag equivalences (property-style sanity check) ──────────
+
+    #[test]
+    fn single_tag_strict_intersection_equals_strict_union() {
+        // With exactly one tag, ∩ and ∪ in strict mode must agree.
+        let (_dir, idx, _) = fixture();
+        let a = find_notes(
+            &idx,
+            &["work/projectTTK".into()],
+            QueryMode::StrictIntersection,
+        )
+        .unwrap();
+        let b = find_notes(&idx, &["work/projectTTK".into()], QueryMode::StrictUnion).unwrap();
+        assert_eq!(as_set(a), as_set(b));
+    }
+
+    #[test]
+    fn single_tag_recursive_intersection_equals_recursive_union() {
+        let (_dir, idx, _) = fixture();
+        let a = find_notes(
+            &idx,
+            &["learning/mathematics".into()],
+            QueryMode::RecursiveIntersection,
+        )
+        .unwrap();
+        let b = find_notes(
+            &idx,
+            &["learning/mathematics".into()],
+            QueryMode::RecursiveUnion,
+        )
+        .unwrap();
+        assert_eq!(as_set(a), as_set(b));
     }
 
     #[test]
