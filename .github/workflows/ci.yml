@@ -59,6 +59,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri
+          # Bumped after a runner image rotation invalidated the cached
+          # target/ on ubuntu-22.04 (clippy failed with "can't find
+          # crate for `tauri`" because cached .rlib files were
+          # rustc-version-mismatched). Bump this prefix again if a
+          # similar incompatibility ever resurfaces.
+          prefix-key: 'v1-rust'
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
