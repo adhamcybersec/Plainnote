@@ -22,7 +22,9 @@ use tempfile::tempdir;
 
 /// Helper: write a brand-new note with a known title and body, return its id.
 fn save(vault: &Vault, title: &str, body: &str) -> NoteId {
-    vault.save_note(body.to_string(), Some(title.to_string())).expect("save")
+    vault
+        .save_note(body.to_string(), Some(title.to_string()))
+        .expect("save")
 }
 
 /// Helper: rename a note by rewriting its frontmatter on disk.
@@ -51,7 +53,8 @@ fn find_path(vault: &Vault, id: &NoteId) -> std::path::PathBuf {
                 if let Some(found) = walk(&p, id_prefix) {
                     return Some(found);
                 }
-            } else if p.file_name()
+            } else if p
+                .file_name()
                 .and_then(|n| n.to_str())
                 .map(|n| n.starts_with(id_prefix))
                 .unwrap_or(false)
@@ -88,8 +91,14 @@ fn backlinks_resolve_through_title_and_id() {
     let backlinks = idx.backlinks_of_note(&a).expect("backlinks query");
     let source_ids: std::collections::HashSet<&str> =
         backlinks.iter().map(|s| s.as_str()).collect();
-    assert!(source_ids.contains(b.to_string().as_str()), "B missing: {source_ids:?}");
-    assert!(source_ids.contains(c.to_string().as_str()), "C missing: {source_ids:?}");
+    assert!(
+        source_ids.contains(b.to_string().as_str()),
+        "B missing: {source_ids:?}"
+    );
+    assert!(
+        source_ids.contains(c.to_string().as_str()),
+        "C missing: {source_ids:?}"
+    );
 }
 
 #[test]
@@ -113,7 +122,8 @@ fn ulid_links_survive_rename_title_links_become_dangling() {
 
     // Rename A: "Calculus" → "Differential Calculus".
     rename(&vault, &a, "Differential Calculus");
-    idx.reconcile_with_vault(&vault).expect("reconcile after rename");
+    idx.reconcile_with_vault(&vault)
+        .expect("reconcile after rename");
 
     let backlinks = idx.backlinks_of_note(&a).expect("backlinks query");
     let source_ids: std::collections::HashSet<&str> =
@@ -146,5 +156,8 @@ fn dangling_links_have_null_target_id() {
     let rows: Vec<LinkRow> = idx.outbound_links_of_note(&b).expect("outbound");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].target_text, "NoSuchNote");
-    assert!(rows[0].target_id.is_none(), "dangling link must have NULL target_id");
+    assert!(
+        rows[0].target_id.is_none(),
+        "dangling link must have NULL target_id"
+    );
 }

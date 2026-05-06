@@ -68,12 +68,7 @@ pub fn create_reminder(
     let id = Ulid::new().to_string();
     index.conn().execute(
         "INSERT INTO reminder (id, note_id, fire_at, body) VALUES (?1, ?2, ?3, ?4)",
-        params![
-            id,
-            note_id.map(|n| n.to_string()),
-            canonical,
-            body
-        ],
+        params![id, note_id.map(|n| n.to_string()), canonical, body],
     )?;
     Ok(id)
 }
@@ -146,10 +141,7 @@ pub fn list_reminders(
 /// This does NOT mutate state — the scheduler is responsible for calling
 /// `mark_fired` after delivery succeeds. Doing the read separately means
 /// a delivery failure leaves the reminder pending for the next poll.
-pub fn next_due(
-    index: &Index,
-    now: &DateTime<Utc>,
-) -> Result<Option<Reminder>, ReminderError> {
+pub fn next_due(index: &Index, now: &DateTime<Utc>) -> Result<Option<Reminder>, ReminderError> {
     let now_iso = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let mut stmt = index.conn().prepare(
         "SELECT id, note_id, fire_at, fired_at, cancelled_at, body
@@ -246,9 +238,14 @@ mod tests {
         let (_dir, idx) = fresh_index();
         let id = create_reminder(&idx, None, "2026-06-01T10:00:00Z", "x").unwrap();
         cancel_reminder(&idx, &id).unwrap();
-        assert_eq!(list_reminders(&idx, ReminderFilter::Active).unwrap().len(), 0);
         assert_eq!(
-            list_reminders(&idx, ReminderFilter::Cancelled).unwrap().len(),
+            list_reminders(&idx, ReminderFilter::Active).unwrap().len(),
+            0
+        );
+        assert_eq!(
+            list_reminders(&idx, ReminderFilter::Cancelled)
+                .unwrap()
+                .len(),
             1
         );
         assert_eq!(list_reminders(&idx, ReminderFilter::All).unwrap().len(), 1);
@@ -268,7 +265,10 @@ mod tests {
         let (_dir, idx) = fresh_index();
         let id = create_reminder(&idx, None, "2026-06-01T10:00:00Z", "x").unwrap();
         mark_fired(&idx, &id).unwrap();
-        assert_eq!(list_reminders(&idx, ReminderFilter::Active).unwrap().len(), 0);
+        assert_eq!(
+            list_reminders(&idx, ReminderFilter::Active).unwrap().len(),
+            0
+        );
         let fired = list_reminders(&idx, ReminderFilter::Fired).unwrap();
         assert_eq!(fired.len(), 1);
         assert!(fired[0].fired_at.is_some());
@@ -287,10 +287,8 @@ mod tests {
     fn next_due_picks_earliest_overdue() {
         let (_dir, idx) = fresh_index();
         let _later = create_reminder(&idx, None, "2026-06-01T12:00:00Z", "later").unwrap();
-        let earlier =
-            create_reminder(&idx, None, "2026-06-01T10:00:00Z", "earlier").unwrap();
-        let _future =
-            create_reminder(&idx, None, "2030-01-01T00:00:00Z", "future").unwrap();
+        let earlier = create_reminder(&idx, None, "2026-06-01T10:00:00Z", "earlier").unwrap();
+        let _future = create_reminder(&idx, None, "2030-01-01T00:00:00Z", "future").unwrap();
         let now: DateTime<Utc> = "2026-06-01T11:00:00Z".parse().unwrap();
         let due = next_due(&idx, &now).unwrap().expect("one due");
         assert_eq!(due.id, earlier);
@@ -307,8 +305,7 @@ mod tests {
     #[test]
     fn next_due_skips_cancelled_and_fired() {
         let (_dir, idx) = fresh_index();
-        let cancelled =
-            create_reminder(&idx, None, "2026-06-01T10:00:00Z", "cancelled").unwrap();
+        let cancelled = create_reminder(&idx, None, "2026-06-01T10:00:00Z", "cancelled").unwrap();
         cancel_reminder(&idx, &cancelled).unwrap();
         let fired = create_reminder(&idx, None, "2026-06-01T10:00:00Z", "fired").unwrap();
         mark_fired(&idx, &fired).unwrap();
@@ -323,15 +320,17 @@ mod tests {
         create_reminder(&idx, None, "2026-06-01T15:00:00Z", "b").unwrap();
         let now: DateTime<Utc> = "2026-06-01T11:00:00Z".parse().unwrap();
         let next = next_pending_after(&idx, &now).unwrap().unwrap();
-        assert_eq!(next.format("%Y-%m-%dT%H:%M:%SZ").to_string(), "2026-06-01T12:00:00Z");
+        assert_eq!(
+            next.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            "2026-06-01T12:00:00Z"
+        );
     }
 
     #[test]
     fn list_active_orders_by_fire_at_ascending() {
         let (_dir, idx) = fresh_index();
         let later = create_reminder(&idx, None, "2026-06-02T00:00:00Z", "later").unwrap();
-        let earlier =
-            create_reminder(&idx, None, "2026-06-01T00:00:00Z", "earlier").unwrap();
+        let earlier = create_reminder(&idx, None, "2026-06-01T00:00:00Z", "earlier").unwrap();
         let active = list_reminders(&idx, ReminderFilter::Active).unwrap();
         assert_eq!(active[0].id, earlier);
         assert_eq!(active[1].id, later);

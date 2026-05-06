@@ -93,9 +93,7 @@ pub fn spawn_scheduler<N: Notifier>(
                     }
                 };
                 let due = reminders::next_due(&idx, &now).ok().flatten();
-                let next = reminders::next_pending_after(&idx, &now)
-                    .ok()
-                    .flatten();
+                let next = reminders::next_pending_after(&idx, &now).ok().flatten();
                 (due, next)
             };
 
@@ -237,8 +235,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(cap.count.load(Ordering::SeqCst), 0);
         // Sanity: the row is in the cancelled state, not fired.
-        let cancelled =
-            list_reminders(&idx.lock().unwrap(), ReminderFilter::Cancelled).unwrap();
+        let cancelled = list_reminders(&idx.lock().unwrap(), ReminderFilter::Cancelled).unwrap();
         assert_eq!(cancelled[0].id, id);
     }
 

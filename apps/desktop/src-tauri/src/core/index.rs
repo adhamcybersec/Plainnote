@@ -590,10 +590,7 @@ impl Index {
     /// body, with its resolution state. `target_id` is `None` for dangling.
     /// Public so integration tests can verify the wikilink graph at the
     /// core layer without going through Tauri commands.
-    pub fn outbound_links_of_note(
-        &self,
-        source: &NoteId,
-    ) -> Result<Vec<LinkRow>, IndexError> {
+    pub fn outbound_links_of_note(&self, source: &NoteId) -> Result<Vec<LinkRow>, IndexError> {
         let mut stmt = self.conn.prepare(
             "SELECT raw, target_text, alias, target_id
              FROM note_link
@@ -614,9 +611,9 @@ impl Index {
     /// Source ids of every note that links *to* `target` via a resolved
     /// `target_id` (renames followed via ULID per ADR-007).
     pub fn backlinks_of_note(&self, target: &NoteId) -> Result<Vec<String>, IndexError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT source FROM note_link WHERE target_id = ?1 ORDER BY source",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT source FROM note_link WHERE target_id = ?1 ORDER BY source")?;
         let rows = stmt.query_map(rusqlite::params![target.to_string()], |row| {
             row.get::<_, String>(0)
         })?;

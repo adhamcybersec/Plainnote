@@ -63,7 +63,9 @@ fn read_graph(index: &Index) -> Result<(Vec<Pair>, Vec<Pair>), GraphError> {
     let mut node_stmt =
         conn.prepare("SELECT id, COALESCE(title, '') FROM note_index ORDER BY id")?;
     let nodes: Vec<(String, String)> = node_stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -72,7 +74,9 @@ fn read_graph(index: &Index) -> Result<(Vec<Pair>, Vec<Pair>), GraphError> {
          WHERE target_id IS NOT NULL",
     )?;
     let edges: Vec<(String, String)> = edge_stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .filter_map(|r| r.ok())
         .collect();
     Ok((nodes, edges))
@@ -247,7 +251,9 @@ fn layout_fr(n: usize, edges: &[(usize, usize)]) -> Vec<(f32, f32)> {
         }
         // Apply displacements with the cooling cap.
         for i in 0..n {
-            let d = (disp[i].0 * disp[i].0 + disp[i].1 * disp[i].1).sqrt().max(1e-4);
+            let d = (disp[i].0 * disp[i].0 + disp[i].1 * disp[i].1)
+                .sqrt()
+                .max(1e-4);
             let cap = d.min(t);
             pos[i].0 += disp[i].0 / d * cap;
             pos[i].1 += disp[i].1 / d * cap;

@@ -398,11 +398,12 @@ pub fn set_reminder(
     };
     let id = {
         let idx = state.index.lock().map_err(|_| IpcError::locked())?;
-        reminders::create_reminder(&idx, parsed_note_id.as_ref(), &fire_at, &body)
-            .map_err(|e| match e {
+        reminders::create_reminder(&idx, parsed_note_id.as_ref(), &fire_at, &body).map_err(|e| {
+            match e {
                 reminders::ReminderError::InvalidTimestamp(m) => IpcError::invalid(m),
                 other => IpcError::io(other.to_string()),
-            })?
+            }
+        })?
     };
     if let Some(tx) = &state.reminder_wake {
         let _ = tx.send(Wake);
