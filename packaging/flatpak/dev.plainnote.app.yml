@@ -24,6 +24,16 @@ runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
 command: plainnote
 
+# flatpak-builder's post-build phase runs 'appstream-compose' to compile
+# AppStream metadata + cache icons. That binary was renamed to
+# 'appstreamcli compose' in newer appstream releases; the legacy name
+# isn't shipped in Sdk//24.08, so flatpak-builder errors with
+# "bwrap: execvp appstream-compose: No such file". Skip the step —
+# our hand-written metainfo.xml is already installed at
+# /app/share/metainfo and is what GNOME Software / Flatpak actually
+# read. We lose nothing by skipping the recompile.
+appstream-compose: false
+
 # ─────────────────────────────────────────────────────────────────────
 # finish-args — sandbox permissions exposed to the running app.
 #
