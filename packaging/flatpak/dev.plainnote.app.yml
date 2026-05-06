@@ -14,15 +14,14 @@
 # updating tauri.conf.json, the .desktop file inside the .deb, and any
 # D-Bus references.
 #
-# Runtime: 24.08 is the current FreeDesktop runtime as of 2025+. 23.08 was
-# EOL'd; building on EOL runtimes ships unpatched libraries to users and
-# Flathub flags them. Re-evaluate the runtime version each release.
+# Runtime: 24.08 is the current FreeDesktop runtime. 23.08 was EOL'd;
+# building on EOL runtimes ships unpatched libraries to users and Flathub
+# flags them. Re-evaluate the runtime version each release.
 
 app-id: dev.plainnote.app
 runtime: org.freedesktop.Platform
 runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
-sdk-version: '24.08'
 command: plainnote
 
 # ─────────────────────────────────────────────────────────────────────
@@ -39,7 +38,7 @@ finish-args:
   - --share=ipc                              # required by --socket=fallback-x11
 
   # GPU acceleration: WebKit2GTK uses Mesa via DRI for canvas, transforms,
-  # and the graph view's force-directed layout (M5). Without this, the graph
+  # and the graph view's force-directed layout. Without this, the graph
   # view falls back to software rendering and pegs a CPU core at 5k nodes.
   - --device=dri
 
@@ -59,50 +58,55 @@ finish-args:
   # ────────────────────────────────────────────────────────────────────
   # NOT GRANTED — and why. Re-grant later only with a justification.
   # ────────────────────────────────────────────────────────────────────
-  # --share=network         : v0.1 ships zero network features. M7/M8 P2P
-  #                           sync will need this in v0.2; until then, the
-  #                           app is offline-only and that's a hard guarantee.
+  # --share=network         : v0.1 ships zero network features. P2P sync
+  #                           will need this in v0.2; until then, the app
+  #                           is offline-only and that's a hard guarantee.
   # --talk-name=org.freedesktop.secrets : we don't use libsecret.
   # --filesystem=host       : would expose /, /usr, /opt — the vault never
   #                           needs to read system paths.
   # --device=all            : --device=dri is the only hardware we need.
   # --talk-name=ca.desrt.dconf : we read prefers-color-scheme via CSS,
-  #                              not via gsettings. If we ever switch to
-  #                              gsettings polling, this needs to be added
-  #                              along with --filesystem=xdg-config/dconf:ro.
+  #                              not via gsettings.
 
 # ─────────────────────────────────────────────────────────────────────
 # Build modules — repackage the .deb that Tauri already produced.
+#
+# build-commands run inside flatpak-builder's sandbox. Outside /app
+# the filesystem is READ-ONLY — extract the .deb to a build-dir scratch
+# space, then `install` the files we need into /app/.
 # ─────────────────────────────────────────────────────────────────────
 modules:
   - name: plainnote
     buildsystem: simple
     build-commands:
-      # Extract the .deb in place. The .deb's data.tar.* contains:
-      #   /usr/bin/plainnote                                  (binary)
-      #   /usr/share/applications/plainnote.desktop           (desktop file)
-      #   /usr/share/icons/hicolor/<size>/apps/plainnote.png  (icons)
-      - ar x plainnote.deb data.tar.gz || ar x plainnote.deb data.tar.xz
-      - tar -xf data.tar.* -C /
-      # Tauri's .deb names the binary 'plainnote' (lowercase). The Flatpak
-      # `command:` field above must reference the same name. If Tauri ever
-      # capitalizes it, the command line above breaks.
-      #
-      # Move files into the Flatpak prefix layout (/app/...).
-      - install -Dm755 /usr/bin/plainnote /app/bin/plainnote
-      - install -Dm644 /usr/share/applications/plainnote.desktop
+      # 1. Extract the .deb's data.tar.* into a writable scratch dir.
+      #    The .deb is an `ar` archive; data.tar.* may be gzipped, xz'd,
+      #    or zstd'd depending on dpkg version on the build host.
+      - mkdir -p _extracted
+      - ar x plainnote.deb data.tar.gz || ar x plainnote.deb data.tar.xz || ar x plainnote.deb data.tar.zst
+      - tar -xf data.tar.* -C _extracted
+
+      # 2. Install binary, .desktop, metainfo, and icons into /app/.
+      #    Note the desktop file is 'Plainnote.desktop' (capital P) —
+      #    that's how Tauri 2 names it from productName="Plainnote".
+      - install -Dm755 _extracted/usr/bin/plainnote /app/bin/plainnote
+      - install -Dm644 _extracted/usr/share/applications/Plainnote.desktop
         /app/share/applications/dev.plainnote.app.desktop
-      - install -Dm644 packaging/flatpak/dev.plainnote.app.metainfo.xml
+      - install -Dm644 dev.plainnote.app.metainfo.xml
         /app/share/metainfo/dev.plainnote.app.metainfo.xml
-      # Icons: copy every size Tauri shipped, renaming to the Flatpak app-id.
+
+      # 3. Icons: copy every size shipped, renaming to match the app-id.
+      #    The .deb only contains the sizes Tauri generated; missing
+      #    sizes are skipped silently rather than failing the build.
       - |
         for size in 32x32 128x128 256x256 512x512; do
-          src="/usr/share/icons/hicolor/${size}/apps/plainnote.png"
+          src="_extracted/usr/share/icons/hicolor/${size}/apps/plainnote.png"
           dst="/app/share/icons/hicolor/${size}/apps/dev.plainnote.app.png"
           [ -f "$src" ] && install -Dm644 "$src" "$dst" || true
         done
-      # Patch the .desktop file: rename the file to match the app-id (Flatpak
-      # convention), point Exec at /app/bin/plainnote, and update Icon=.
+
+      # 4. Patch the .desktop file: Exec must be the bare command name
+      #    (Flatpak resolves it via /app/bin), Icon must match the app-id.
       - |
         sed -i \
           -e 's|^Exec=.*|Exec=plainnote %u|' \
@@ -110,11 +114,14 @@ modules:
           /app/share/applications/dev.plainnote.app.desktop
 
     sources:
-      # The CI workflow stages the freshly-built .deb here before invoking
-      # flatpak-builder. Local builds: copy the .deb produced by
-      # `npx tauri build --bundles deb` into packaging/flatpak/ first.
+      # The CI workflow stages the freshly-built .deb at this path before
+      # invoking flatpak-builder. Local builds: copy the .deb produced by
+      # `npx tauri build --bundles deb` to packaging/flatpak/plainnote.deb.
       - type: file
         path: plainnote.deb
-        # NOTE: this path is relative to the manifest. CI must place the
-        # .deb at packaging/flatpak/plainnote.deb before invoking
-        # flatpak-builder. The release workflow handles this.
+
+      # The metainfo file lives next to this manifest in-repo; declaring
+      # it as a source copies it into the build dir so install -D can
+      # find it as a relative path.
+      - type: file
+        path: dev.plainnote.app.metainfo.xml
