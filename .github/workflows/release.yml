@@ -86,11 +86,16 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          # NOTE: 'fuse libfuse2' is correct on ubuntu-22.04 (pre-t64).
-          # On ubuntu-24.04+ replace with 'libfuse2t64' and DROP 'fuse'
-          # — the legacy 'fuse' package conflicts with fuse3 and apt
-          # resolves it by uninstalling fuse3 + every desktop package
-          # that depends on it.
+          # NOTE: 'fuse libfuse2' is correct on ubuntu-22.04 (pre-t64) for
+          # AppImage runtime. On ubuntu-24.04+ replace with 'libfuse2t64'
+          # and DROP 'fuse' — the legacy 'fuse' package conflicts with
+          # fuse3 and apt resolves it by uninstalling fuse3 + every
+          # desktop package that depends on it.
+          #
+          # 'fuse3' is needed in addition for flatpak-builder's
+          # rofiles-fuse (read-only-overlay), which calls fusermount3.
+          # On 22.04 'fuse' and 'fuse3' coexist as separate packages;
+          # on 24.04+ fuse3 is the default and replaces fuse.
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             curl \
@@ -104,6 +109,7 @@ jobs:
             patchelf \
             fuse \
             libfuse2 \
+            fuse3 \
             flatpak \
             flatpak-builder
 
