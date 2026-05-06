@@ -86,16 +86,18 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          # NOTE: 'fuse libfuse2' is correct on ubuntu-22.04 (pre-t64) for
-          # AppImage runtime. On ubuntu-24.04+ replace with 'libfuse2t64'
-          # and DROP 'fuse' — the legacy 'fuse' package conflicts with
-          # fuse3 and apt resolves it by uninstalling fuse3 + every
-          # desktop package that depends on it.
-          #
-          # 'fuse3' is needed in addition for flatpak-builder's
-          # rofiles-fuse (read-only-overlay), which calls fusermount3.
-          # On 22.04 'fuse' and 'fuse3' coexist as separate packages;
-          # on 24.04+ fuse3 is the default and replaces fuse.
+          # FUSE landscape on this runner:
+          # - 'fuse3' is PRE-INSTALLED on ubuntu-22.04 GH runners. It
+          #   declares Breaks: fuse, so apt CANNOT install fuse alongside
+          #   it. Adding 'fuse' to this list gets apt to silently evict
+          #   fuse3 — which then breaks flatpak-builder's rofiles-fuse
+          #   (calls fusermount3). Don't list 'fuse'.
+          # - 'libfuse2' (the runtime library) is what AppImage end-users
+          #   need. We list it here so the AppImage Tauri produces is
+          #   self-contained for any system that already has libfuse2.
+          # - APPIMAGE_EXTRACT_AND_RUN=1 (set on the tauri build step
+          #   below) tells appimagetool to extract instead of FUSE-mount,
+          #   so the build itself doesn't need fusermount (2.x binary).
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             curl \
@@ -107,7 +109,6 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
-            fuse \
             libfuse2 \
             fuse3 \
             flatpak \
@@ -145,6 +146,11 @@ jobs:
 
       - name: Build Tauri bundles (AppImage + .deb)
         working-directory: apps/desktop
+        # APPIMAGE_EXTRACT_AND_RUN tells appimagetool to extract its own
+        # contents instead of FUSE-mounting them. Required on runners
+        # without 'fuse' (FUSE 2.x) — see apt-install step above.
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
         run: npx tauri build --bundles appimage,deb
 
       # ─── Flatpak build ───────────────────────────────────────────────
