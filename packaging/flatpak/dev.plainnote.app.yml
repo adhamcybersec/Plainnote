@@ -1,0 +1,120 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Flatpak manifest for Plainnote.
+#
+# Built from the .deb artifact that `tauri build --bundles deb` produces, so
+# we don't re-compile Rust inside flatpak-builder's sandbox. The release
+# workflow (.github/workflows/release.yml) runs:
+#
+#   1. tauri build --bundles appimage,deb  (produces apps/desktop/src-tauri/target/release/bundle/deb/*.deb)
+#   2. flatpak-builder --repo=repo --force-clean build packaging/flatpak/dev.plainnote.app.yml
+#   3. flatpak build-bundle repo plainnote.flatpak dev.plainnote.app
+#
+# App ID: matches `identifier` in tauri.conf.json. Do not change without
+# updating tauri.conf.json, the .desktop file inside the .deb, and any
+# D-Bus references.
+#
+# Runtime: 24.08 is the current FreeDesktop runtime as of 2025+. 23.08 was
+# EOL'd; building on EOL runtimes ships unpatched libraries to users and
+# Flathub flags them. Re-evaluate the runtime version each release.
+
+app-id: dev.plainnote.app
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-version: '24.08'
+command: plainnote
+
+# ─────────────────────────────────────────────────────────────────────
+# finish-args — sandbox permissions exposed to the running app.
+#
+# Plainnote's spec is privacy-first (no telemetry, no cloud, files-on-disk
+# authoritative). The principle below: grant the MINIMUM needed for v0.1
+# features to work. Every entry is justified with the feature it enables.
+# ─────────────────────────────────────────────────────────────────────
+finish-args:
+  # Display: standard for any GTK/WebKit GUI app. Wayland-first, X11 fallback.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc                              # required by --socket=fallback-x11
+
+  # GPU acceleration: WebKit2GTK uses Mesa via DRI for canvas, transforms,
+  # and the graph view's force-directed layout (M5). Without this, the graph
+  # view falls back to software rendering and pegs a CPU core at 5k nodes.
+  - --device=dri
+
+  # D-Bus / notifications: notify-rust talks straight to
+  # org.freedesktop.Notifications. Required for reminder delivery. We use
+  # D-Bus directly rather than xdg-desktop-portal::Notification because the
+  # portal API is async and more verbose for the same outcome.
+  - --talk-name=org.freedesktop.Notifications
+
+  # Filesystem: vault location is user-configurable in Settings. Restricting
+  # to xdg-documents would break users who keep their vault elsewhere
+  # (~/notes, mounted external drives, etc). Users who want a tighter
+  # scope can run `flatpak override --user --nofilesystem=home
+  # --filesystem=~/specific/path dev.plainnote.app`.
+  - --filesystem=home
+
+  # ────────────────────────────────────────────────────────────────────
+  # NOT GRANTED — and why. Re-grant later only with a justification.
+  # ────────────────────────────────────────────────────────────────────
+  # --share=network         : v0.1 ships zero network features. M7/M8 P2P
+  #                           sync will need this in v0.2; until then, the
+  #                           app is offline-only and that's a hard guarantee.
+  # --talk-name=org.freedesktop.secrets : we don't use libsecret.
+  # --filesystem=host       : would expose /, /usr, /opt — the vault never
+  #                           needs to read system paths.
+  # --device=all            : --device=dri is the only hardware we need.
+  # --talk-name=ca.desrt.dconf : we read prefers-color-scheme via CSS,
+  #                              not via gsettings. If we ever switch to
+  #                              gsettings polling, this needs to be added
+  #                              along with --filesystem=xdg-config/dconf:ro.
+
+# ─────────────────────────────────────────────────────────────────────
+# Build modules — repackage the .deb that Tauri already produced.
+# ─────────────────────────────────────────────────────────────────────
+modules:
+  - name: plainnote
+    buildsystem: simple
+    build-commands:
+      # Extract the .deb in place. The .deb's data.tar.* contains:
+      #   /usr/bin/plainnote                                  (binary)
+      #   /usr/share/applications/plainnote.desktop           (desktop file)
+      #   /usr/share/icons/hicolor/<size>/apps/plainnote.png  (icons)
+      - ar x plainnote.deb data.tar.gz || ar x plainnote.deb data.tar.xz
+      - tar -xf data.tar.* -C /
+      # Tauri's .deb names the binary 'plainnote' (lowercase). The Flatpak
+      # `command:` field above must reference the same name. If Tauri ever
+      # capitalizes it, the command line above breaks.
+      #
+      # Move files into the Flatpak prefix layout (/app/...).
+      - install -Dm755 /usr/bin/plainnote /app/bin/plainnote
+      - install -Dm644 /usr/share/applications/plainnote.desktop
+        /app/share/applications/dev.plainnote.app.desktop
+      - install -Dm644 packaging/flatpak/dev.plainnote.app.metainfo.xml
+        /app/share/metainfo/dev.plainnote.app.metainfo.xml
+      # Icons: copy every size Tauri shipped, renaming to the Flatpak app-id.
+      - |
+        for size in 32x32 128x128 256x256 512x512; do
+          src="/usr/share/icons/hicolor/${size}/apps/plainnote.png"
+          dst="/app/share/icons/hicolor/${size}/apps/dev.plainnote.app.png"
+          [ -f "$src" ] && install -Dm644 "$src" "$dst" || true
+        done
+      # Patch the .desktop file: rename the file to match the app-id (Flatpak
+      # convention), point Exec at /app/bin/plainnote, and update Icon=.
+      - |
+        sed -i \
+          -e 's|^Exec=.*|Exec=plainnote %u|' \
+          -e 's|^Icon=.*|Icon=dev.plainnote.app|' \
+          /app/share/applications/dev.plainnote.app.desktop
+
+    sources:
+      # The CI workflow stages the freshly-built .deb here before invoking
+      # flatpak-builder. Local builds: copy the .deb produced by
+      # `npx tauri build --bundles deb` into packaging/flatpak/ first.
+      - type: file
+        path: plainnote.deb
+        # NOTE: this path is relative to the manifest. CI must place the
+        # .deb at packaging/flatpak/plainnote.deb before invoking
+        # flatpak-builder. The release workflow handles this.

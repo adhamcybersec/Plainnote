@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-License-Identifier: AGPL-3.0-or-later
+
+  AppStream metainfo for Plainnote. Read by Flatpak (mandatory),
+  GNOME Software, KDE Discover, and AppStream-aware launchers.
+
+  Validate locally with:
+    flatpak run --command=appstream-util org.freedesktop.Sdk//24.08 \
+      validate-relax packaging/flatpak/dev.plainnote.app.metainfo.xml
+-->
+<component type="desktop-application">
+  <id>dev.plainnote.app</id>
+  <name>Plainnote</name>
+  <summary>Local-first note-taking with hierarchical tags</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+
+  <description>
+    <p>
+      Plainnote is a local-first note-taking app. Notes live as plain
+      Markdown files on disk and remain readable without the app. Tags
+      are hierarchical with inheritance, and a four-mode tag query
+      algebra (AND / OR / NOT / EXCLUDE) lets you find anything fast.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Plain-text Markdown storage — your vault works with any tool</li>
+      <li>Hierarchical tags with inheritance (parent::child::grandchild)</li>
+      <li>Four-mode tag query algebra for precise filtering</li>
+      <li>Wikilinks with rename-stable references</li>
+      <li>Force-directed graph view of note connections</li>
+      <li>Reminders with desktop notifications</li>
+      <li>No telemetry, no cloud, no network calls — fully offline</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">dev.plainnote.app.desktop</launchable>
+
+  <url type="homepage">https://github.com/adhamcybersec/Plainnote</url>
+  <url type="bugtracker">https://github.com/adhamcybersec/Plainnote/issues</url>
+  <url type="vcs-browser">https://github.com/adhamcybersec/Plainnote</url>
+
+  <developer id="dev.plainnote">
+    <name>Adham Rashed</name>
+  </developer>
+
+  <categories>
+    <category>Office</category>
+    <category>WordProcessor</category>
+    <category>Utility</category>
+  </categories>
+
+  <keywords>
+    <keyword>notes</keyword>
+    <keyword>markdown</keyword>
+    <keyword>tags</keyword>
+    <keyword>local-first</keyword>
+    <keyword>privacy</keyword>
+  </keywords>
+
+  <!--
+    OARS content rating: every field 'none' because Plainnote is a
+    notes app with no user-generated network content. Required by
+    Flatpak/Flathub validation.
+  -->
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.1.0" date="2026-05-06">
+      <description>
+        <p>Initial release. Includes:</p>
+        <ul>
+          <li>Files-on-disk vault with hierarchical tags</li>
+          <li>Four-mode tag query algebra</li>
+          <li>Wikilinks with autocomplete + backlinks panel</li>
+          <li>Force-directed graph view (5k node cap)</li>
+          <li>Reminders with desktop notifications</li>
+          <li>Theme + density + accent customization</li>
+          <li>Accessibility baseline (focus rings, aria-live, reduce-motion)</li>
+        </ul>
+        <p>Deferred to v0.2: voice capture (M4), Android port (M7/M8), P2P sync.</p>
+      </description>
+    </release>
+  </releases>
+</component>

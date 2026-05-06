@@ -86,6 +86,11 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
+          # NOTE: 'fuse libfuse2' is correct on ubuntu-22.04 (pre-t64).
+          # On ubuntu-24.04+ replace with 'libfuse2t64' and DROP 'fuse'
+          # — the legacy 'fuse' package conflicts with fuse3 and apt
+          # resolves it by uninstalling fuse3 + every desktop package
+          # that depends on it.
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             curl \
@@ -98,7 +103,9 @@ jobs:
             librsvg2-dev \
             patchelf \
             fuse \
-            libfuse2
+            libfuse2 \
+            flatpak \
+            flatpak-builder
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@21dc36fb71dd22e3317045c0c31a3f4249868b17  # 1.78
@@ -134,13 +141,59 @@ jobs:
         working-directory: apps/desktop
         run: npx tauri build --bundles appimage,deb
 
+      # ─── Flatpak build ───────────────────────────────────────────────
+      # We don't re-build Rust inside the Flatpak sandbox; we extract the
+      # .deb produced above and repackage it into the FreeDesktop 24.08
+      # runtime. Build time: ~3-5 min once the runtime is cached.
+
+      - name: Cache Flatpak runtime (Freedesktop 24.08)
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/flatpak
+          key: flatpak-runtime-fdo-24.08-v1
+          restore-keys: flatpak-runtime-fdo-24.08-
+
+      - name: Add Flathub + install runtime/sdk
+        run: |
+          set -euo pipefail
+          flatpak remote-add --if-not-exists --user flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive flathub \
+            org.freedesktop.Platform//24.08 \
+            org.freedesktop.Sdk//24.08
+
+      - name: Stage .deb for Flatpak build
+        run: |
+          set -euo pipefail
+          # The manifest references './plainnote.deb' (relative to manifest).
+          # There's exactly one .deb in the bundle dir; glob and rename.
+          find apps/desktop/src-tauri/target/release/bundle/deb \
+            -name '*.deb' -print -exec cp {} packaging/flatpak/plainnote.deb \;
+
+      - name: Build Flatpak bundle
+        working-directory: packaging/flatpak
+        run: |
+          set -euo pipefail
+          flatpak-builder --user --force-clean \
+            --repo=repo \
+            --install-deps-from=flathub \
+            build-dir dev.plainnote.app.yml
+          # Bundle the per-user OSTree repo into a single .flatpak file.
+          mkdir -p ../../release-out
+          flatpak build-bundle repo \
+            "../../release-out/Plainnote-${VERSION}-x86_64.flatpak" \
+            dev.plainnote.app
+
       - name: Collect artifacts
         run: |
           set -euo pipefail
           mkdir -p release-out
           cp apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage release-out/
           cp apps/desktop/src-tauri/target/release/bundle/deb/*.deb release-out/
+          # The .flatpak was already placed in release-out/ by the build
+          # step above; just confirm it's there.
           ls -la release-out/
+          test -f release-out/Plainnote-${VERSION}-x86_64.flatpak
 
       - name: Generate SHA256SUMS
         working-directory: release-out
