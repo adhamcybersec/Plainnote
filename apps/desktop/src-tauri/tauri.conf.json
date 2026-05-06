@@ -30,7 +30,7 @@
   "bundle": {
     "active": true,
     "targets": ["appimage", "deb"],
-    "category": "Office",
+    "category": "Productivity",
     "shortDescription": "Local-first note-taking",
     "longDescription": "Plainnote is a local-first, files-on-disk note-taking app with hierarchical tags and four-mode tag query algebra. AGPL-3.0.",
     "homepage": "https://github.com/adhamcybersec/Plainnote",
