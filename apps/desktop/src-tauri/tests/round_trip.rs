@@ -46,7 +46,7 @@ fn capture_then_restart_then_find_again() {
         assert_eq!(summaries[2].id, id1);
     }
 
-    // ─── On disk: verify the user's contract — readable .md files ──────
+    // ─── On disk: verify the plain-Markdown contract (R3) ──────────────
     let mut md_files = Vec::new();
     walk_md(&vault_root.join("notes"), &mut md_files);
     assert_eq!(md_files.len(), 3);

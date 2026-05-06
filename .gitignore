@@ -34,5 +34,10 @@ node_modules/
 CLAUDE.md
 prompts/
 
+# private design + spec — internal-only working docs
+SPEC.md
+docs/DECISIONS.md
+design/
+
 # vault test data
 vault/

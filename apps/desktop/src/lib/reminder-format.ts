@@ -6,8 +6,8 @@
  * with `new Date()` in production; tests pass a fixed reference.
  *
  * Design constraint: literal-language labels only. No emoji, no
- * abbreviations ("min", "hr"). The design
- * brief asks for exact, non-cute copy.
+ * abbreviations ("min", "hr"). The design brief favors exact,
+ * non-cute copy for predictable UX.
  */
 
 export type LeadTimePreset = 'now' | 'in_5m' | 'in_1h' | 'tomorrow_9am';
