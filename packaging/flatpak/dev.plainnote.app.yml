@@ -14,14 +14,20 @@
 # updating tauri.conf.json, the .desktop file inside the .deb, and any
 # D-Bus references.
 #
-# Runtime: 24.08 is the current FreeDesktop runtime. 23.08 was EOL'd;
-# building on EOL runtimes ships unpatched libraries to users and Flathub
-# flags them. Re-evaluate the runtime version each release.
+# Runtime: org.gnome.Platform//47 (NOT org.freedesktop.Platform).
+# Tauri 2 dynamically links against libwebkit2gtk-4.1.so.0 — that
+# library is shipped by org.gnome.Platform but NOT by org.freedesktop
+# .Platform. A Tauri app built against the freedesktop runtime
+# installs but errors at startup with:
+#   error while loading shared libraries: libwebkit2gtk-4.1.so.0:
+#   cannot open shared object file: No such file or directory
+# GNOME 47 ships GTK 4 + webkit2gtk-4.1 + webkitgtk-6.0; we use the
+# 4.1 ABI because that's what Tauri 2 (≤ 2.11) targets.
 
 app-id: dev.plainnote.app
-runtime: org.freedesktop.Platform
-runtime-version: '24.08'
-sdk: org.freedesktop.Sdk
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
 command: plainnote
 
 # flatpak-builder's post-build phase runs 'appstream-compose' to compile
