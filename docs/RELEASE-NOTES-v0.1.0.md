@@ -63,7 +63,7 @@ Three formats, all on x86_64 Linux:
 
 | Format | File | Notes |
 |---|---|---|
-| Flatpak | `Plainnote-0.1.0-x86_64.flatpak` | Sandboxed, no-network, FreeDesktop 24.08 runtime |
+| Flatpak | `Plainnote-0.1.0-x86_64.flatpak` | Sandboxed, no-network, GNOME 49 runtime |
 | AppImage | `Plainnote-0.1.0-x86_64.AppImage` | Portable, requires `libfuse2t64` (or `libfuse2` on older distros) |
 | .deb | `plainnote_0.1.0_amd64.deb` | Debian 12+, Ubuntu 22.04+ |
 
