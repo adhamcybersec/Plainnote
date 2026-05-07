@@ -38,11 +38,16 @@ pub fn run() {
             // so commands::set_reminder / cancel_reminder can poke it whenever
             // the user changes the reminder set.
             let notifier = Arc::new(DesktopNotifier);
-            let wake_tx: mpsc::UnboundedSender<Wake> = reminder_scheduler::spawn_scheduler(
-                index_arc.clone(),
-                notifier,
-                Duration::from_secs(60),
-            );
+            let (wake_tx, scheduler_fut): (mpsc::UnboundedSender<Wake>, _) =
+                reminder_scheduler::build_scheduler(
+                    index_arc.clone(),
+                    notifier,
+                    Duration::from_secs(60),
+                );
+            // Spawn on Tauri's async runtime — Tauri's setup() runs in a
+            // sync context, so a bare `tokio::spawn` would panic with
+            // "no reactor running" at startup.
+            tauri::async_runtime::spawn(scheduler_fut);
 
             app.manage(AppState {
                 vault: vault.clone(),

@@ -158,12 +158,12 @@ jobs:
       # .deb produced above and repackage it into the FreeDesktop 24.08
       # runtime. Build time: ~3-5 min once the runtime is cached.
 
-      - name: Cache Flatpak runtime (GNOME 47)
+      - name: Cache Flatpak runtime (GNOME 49)
         uses: actions/cache@v4
         with:
           path: ~/.local/share/flatpak
-          key: flatpak-runtime-gnome-47-v1
-          restore-keys: flatpak-runtime-gnome-47-
+          key: flatpak-runtime-gnome-49-v1
+          restore-keys: flatpak-runtime-gnome-49-
 
       - name: Add Flathub + install runtime/sdk
         run: |
@@ -173,8 +173,8 @@ jobs:
           # GNOME Platform 47 includes libwebkit2gtk-4.1, which Tauri 2
           # links against. The freedesktop platform doesn't ship webkit.
           flatpak install --user -y --noninteractive flathub \
-            org.gnome.Platform//47 \
-            org.gnome.Sdk//47
+            org.gnome.Platform//49 \
+            org.gnome.Sdk//49
 
       - name: Stage .deb for Flatpak build
         run: |

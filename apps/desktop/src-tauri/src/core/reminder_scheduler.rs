@@ -66,17 +66,30 @@ impl Notifier for DesktopNotifier {
 #[derive(Debug, Clone, Copy)]
 pub struct Wake;
 
-/// Spawn the scheduler tokio task. Returns a sender so the rest of the
-/// app can poke the scheduler whenever a reminder is created or
-/// cancelled (without that, a long-pending reminder would block the
-/// scheduler in `sleep_until` past a newly-inserted earlier deadline).
-pub fn spawn_scheduler<N: Notifier>(
+/// Build the scheduler task. Returns `(wake_tx, future)`: the caller is
+/// responsible for spawning the future on its async runtime — typically
+/// `tauri::async_runtime::spawn` in production or `tokio::spawn` in
+/// tests. Pushing the spawn out of this function keeps `core/` free of
+/// Tauri imports (ADR-003) AND avoids the production-only panic
+///   "there is no reactor running, must be called from the context of
+///    a Tokio 1.x runtime"
+/// that occurs when this function is invoked from a non-async context
+/// (Tauri's `setup` closure).
+///
+/// The wake_tx lets the rest of the app poke the scheduler whenever a
+/// reminder is created or cancelled — without that, a long-pending
+/// reminder would block the scheduler in `sleep_until` past a
+/// newly-inserted earlier deadline.
+pub fn build_scheduler<N: Notifier + Send + Sync + 'static>(
     index: Arc<Mutex<Index>>,
     notifier: Arc<N>,
     max_idle_sleep: Duration,
-) -> mpsc::UnboundedSender<Wake> {
+) -> (
+    mpsc::UnboundedSender<Wake>,
+    impl std::future::Future<Output = ()> + Send + 'static,
+) {
     let (tx, mut rx) = mpsc::unbounded_channel::<Wake>();
-    tokio::spawn(async move {
+    let fut = async move {
         loop {
             // Drain any pending wakes before we start a new cycle so we
             // don't spin-loop firing the channel.
@@ -134,8 +147,8 @@ pub fn spawn_scheduler<N: Notifier>(
                 }
             }
         }
-    });
-    tx
+    };
+    (tx, fut)
 }
 
 /// Convert an ISO-8601 timestamp string to a `DateTime<Utc>`. Used by
@@ -184,7 +197,8 @@ mod tests {
             seen: Mutex::new(Vec::new()),
             count: AtomicUsize::new(0),
         });
-        let _tx = spawn_scheduler(idx.clone(), cap.clone(), Duration::from_millis(500));
+        let (_tx, _fut) = build_scheduler(idx.clone(), cap.clone(), Duration::from_millis(500));
+        tokio::spawn(_fut);
         // Give the scheduler a moment to deliver.
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(cap.count.load(Ordering::SeqCst), 1);
@@ -201,7 +215,8 @@ mod tests {
             seen: Mutex::new(Vec::new()),
             count: AtomicUsize::new(0),
         });
-        let tx = spawn_scheduler(idx.clone(), cap.clone(), Duration::from_secs(60));
+        let (tx, _fut) = build_scheduler(idx.clone(), cap.clone(), Duration::from_secs(60));
+        tokio::spawn(_fut);
 
         // Add a reminder 200ms in the future, then wake the scheduler.
         let fire_at = (Utc::now() + chrono::Duration::milliseconds(200))
@@ -231,7 +246,8 @@ mod tests {
             seen: Mutex::new(Vec::new()),
             count: AtomicUsize::new(0),
         });
-        let _tx = spawn_scheduler(idx.clone(), cap.clone(), Duration::from_millis(500));
+        let (_tx, _fut) = build_scheduler(idx.clone(), cap.clone(), Duration::from_millis(500));
+        tokio::spawn(_fut);
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(cap.count.load(Ordering::SeqCst), 0);
         // Sanity: the row is in the cancelled state, not fired.
@@ -252,7 +268,8 @@ mod tests {
             seen: Mutex::new(Vec::new()),
             count: AtomicUsize::new(0),
         });
-        let _tx = spawn_scheduler(idx.clone(), cap.clone(), Duration::from_millis(500));
+        let (_tx, _fut) = build_scheduler(idx.clone(), cap.clone(), Duration::from_millis(500));
+        tokio::spawn(_fut);
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(cap.count.load(Ordering::SeqCst), 3);
     }
@@ -281,7 +298,8 @@ mod tests {
         let flaky = Arc::new(FlakyNotifier {
             failed_once: AtomicUsize::new(0),
         });
-        let tx = spawn_scheduler(idx.clone(), flaky.clone(), Duration::from_millis(80));
+        let (tx, _fut) = build_scheduler(idx.clone(), flaky.clone(), Duration::from_millis(80));
+        tokio::spawn(_fut);
         // First poll: delivery fails, row stays pending.
         tokio::time::sleep(Duration::from_millis(50)).await;
         // Wake to force a re-poll; second delivery succeeds.

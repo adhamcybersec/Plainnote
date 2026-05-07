@@ -14,19 +14,24 @@
 # updating tauri.conf.json, the .desktop file inside the .deb, and any
 # D-Bus references.
 #
-# Runtime: org.gnome.Platform//47 (NOT org.freedesktop.Platform).
+# Runtime: org.gnome.Platform//49 (NOT org.freedesktop.Platform).
 # Tauri 2 dynamically links against libwebkit2gtk-4.1.so.0 — that
 # library is shipped by org.gnome.Platform but NOT by org.freedesktop
 # .Platform. A Tauri app built against the freedesktop runtime
 # installs but errors at startup with:
 #   error while loading shared libraries: libwebkit2gtk-4.1.so.0:
 #   cannot open shared object file: No such file or directory
-# GNOME 47 ships GTK 4 + webkit2gtk-4.1 + webkitgtk-6.0; we use the
-# 4.1 ABI because that's what Tauri 2 (≤ 2.11) targets.
+#
+# GNOME runtimes EOL on a ~12-month cycle. As of mid-2026 the supported
+# branches are 49 (active to ~Sept 2026) and 50. We target 49: still
+# ships webkit2gtk-4.1 (the ABI Tauri 2 ≤ 2.11 needs) and has had
+# more bake time than 50. Re-evaluate every 6 months — bumping the
+# runtime version is itself a security event since users see a fresh
+# permission prompt at upgrade.
 
 app-id: dev.plainnote.app
 runtime: org.gnome.Platform
-runtime-version: '47'
+runtime-version: '49'
 sdk: org.gnome.Sdk
 command: plainnote
 
