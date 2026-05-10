@@ -1,15 +1,21 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!--
   Capture screen (R4 zero-friction).
-  One textarea, one primary action (Save), two disabled placeholders
-  (Record / Attach — voice and attachments arrive in v0.2 / M3).
+  One textarea, one primary action (Save), Attach disabled (M3+),
+  Record voice wired to the M4 STT pipeline (M4-T8).
   Cmd+Enter / Ctrl+Enter saves. Esc does nothing — the user must
   never lose typed input by accident.
 -->
 <script lang="ts">
-	import { saveNote } from '$lib/ipc';
+	import {
+		saveNote,
+		startRecording,
+		stopRecordingAndTranscribe,
+		type RecordingState
+	} from '$lib/ipc';
 	import type { IpcError } from '$lib/ipc';
 	import { announce } from '$lib/status';
+	import RecordingIndicator from '$lib/components/RecordingIndicator.svelte';
 
 	let body = $state('');
 	let saving = $state(false);
@@ -17,6 +23,8 @@
 	let errorMessage = $state<string | null>(null);
 	let textarea: HTMLTextAreaElement | undefined = $state();
 	let savedTimer: ReturnType<typeof setTimeout> | null = null;
+
+	let recState = $state<RecordingState>({ kind: 'idle' });
 
 	async function save() {
 		const trimmed = body.trim();
@@ -49,6 +57,60 @@
 			void save();
 		}
 	}
+
+	async function startRecord() {
+		if (recState.kind !== 'idle' && recState.kind !== 'error') return;
+		try {
+			await startRecording();
+			recState = { kind: 'recording', started_at_ms: Date.now() };
+			announce('Recording started.');
+		} catch (e) {
+			const ipc = e as Partial<IpcError>;
+			recState = { kind: 'error', message: ipc?.message ?? String(e) };
+			announce(`Recording failed: ${ipc?.message ?? 'unknown'}`);
+		}
+	}
+
+	async function stopRecord() {
+		if (recState.kind !== 'recording') return;
+		recState = { kind: 'transcribing' };
+		announce('Transcribing…');
+		try {
+			const transcript = await stopRecordingAndTranscribe();
+			insertTranscriptAtCursor(transcript);
+			recState = { kind: 'idle' };
+			announce('Transcript inserted.');
+		} catch (e) {
+			const ipc = e as Partial<IpcError>;
+			recState = { kind: 'error', message: ipc?.message ?? String(e) };
+			announce(`Transcription failed: ${ipc?.message ?? 'unknown'}`);
+		}
+	}
+
+	function dismissRecError() {
+		if (recState.kind === 'error') {
+			recState = { kind: 'idle' };
+		}
+	}
+
+	function insertTranscriptAtCursor(transcript: string) {
+		const ta = textarea;
+		if (!ta) {
+			body = body.length === 0 ? transcript : `${body}\n${transcript}`;
+			return;
+		}
+		const start = ta.selectionStart ?? body.length;
+		const end = ta.selectionEnd ?? body.length;
+		const before = body.slice(0, start);
+		const after = body.slice(end);
+		const padded = before.length > 0 && !/\s$/.test(before) ? ` ${transcript}` : transcript;
+		body = before + padded + after;
+		queueMicrotask(() => {
+			ta.focus();
+			const newCaret = before.length + padded.length;
+			ta.setSelectionRange(newCaret, newCaret);
+		});
+	}
 </script>
 
 <main class="pn-capture">
@@ -66,9 +128,16 @@
 		></textarea>
 
 		<div class="pn-capture__actions">
-			<button class="pn-btn pn-btn--ghost" type="button" disabled aria-disabled="true">
-				<span aria-hidden="true">●</span> Record voice
-			</button>
+			{#if recState.kind === 'idle' || recState.kind === 'error'}
+				<button
+					class="pn-btn pn-btn--ghost"
+					type="button"
+					onclick={startRecord}
+					data-testid="record-button"
+				>
+					<span aria-hidden="true">●</span> Record voice
+				</button>
+			{/if}
 			<button class="pn-btn pn-btn--ghost" type="button" disabled aria-disabled="true">
 				<span aria-hidden="true">▣</span> Attach file
 			</button>
@@ -76,10 +145,15 @@
 				class="pn-btn pn-btn--primary"
 				type="button"
 				onclick={save}
-				disabled={saving || body.trim() === ''}
+				disabled={saving ||
+					body.trim() === '' ||
+					recState.kind === 'recording' ||
+					recState.kind === 'transcribing'}
 				data-testid="save-button">Save</button
 			>
 		</div>
+
+		<RecordingIndicator state={recState} onStop={stopRecord} onDismiss={dismissRecError} />
 
 		<div class="pn-capture__hint">
 			Press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to save · Tags can be added later.

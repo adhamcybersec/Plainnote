@@ -21,14 +21,13 @@ function makeTransport(handlers: Record<string, (args?: Record<string, unknown>)
 }
 
 describe('Capture screen', () => {
-	it('renders a textarea, save button, and disabled record/attach', () => {
+	it('renders a textarea, save button, enabled record, disabled attach', () => {
 		setIpcTransport(async <T>() => '' as unknown as T); // unused
 		render(Capture);
 		expect(screen.getByLabelText('Capture a note')).toBeInTheDocument();
 		expect(screen.getByTestId('save-button')).toBeDisabled(); // empty textarea
-		const record = screen.getByText(/Record voice/);
+		expect(screen.getByTestId('record-button')).not.toBeDisabled();
 		const attach = screen.getByText(/Attach file/);
-		expect(record.closest('button')).toBeDisabled();
 		expect(attach.closest('button')).toBeDisabled();
 	});
 
@@ -122,5 +121,111 @@ describe('Capture screen', () => {
 
 		await waitFor(() => expect(screen.getByTestId('error-chip')).toBeInTheDocument());
 		expect(screen.getByTestId('error-chip').textContent).toContain('disk full');
+	});
+
+	it('record→stop flow inserts the transcript at the cursor', async () => {
+		const transcript = 'Hello from whisper.';
+		const { t } = makeTransport({
+			start_recording: () => undefined,
+			stop_recording_and_transcribe: () => transcript,
+			get_transcription_state: () => ({ kind: 'idle' })
+		});
+		setIpcTransport(t);
+		const user = userEvent.setup();
+
+		render(Capture);
+		const textarea = screen.getByLabelText('Capture a note') as HTMLTextAreaElement;
+
+		await user.type(textarea, 'Note start.');
+		expect(textarea.value).toBe('Note start.');
+
+		const recordBtn = screen.getByTestId('record-button');
+		expect(recordBtn).not.toBeDisabled();
+		await user.click(recordBtn);
+
+		await waitFor(() => {
+			expect(screen.getByTestId('recording-indicator').dataset.state).toBe('recording');
+		});
+
+		await user.click(screen.getByTestId('recording-stop'));
+
+		await waitFor(() => {
+			expect(textarea.value).toContain('Note start.');
+			expect(textarea.value).toContain('Hello from whisper.');
+		});
+
+		expect(screen.queryByTestId('recording-indicator')).toBeNull();
+	});
+
+	it('record button shows error message when start_recording fails with model_missing', async () => {
+		const { t } = makeTransport({
+			start_recording: () => {
+				throw { code: 'model_missing', message: '/home/.../ggml-base.en.bin' };
+			}
+		});
+		setIpcTransport(t);
+		const user = userEvent.setup();
+		render(Capture);
+		await user.click(screen.getByTestId('record-button'));
+		await waitFor(() => {
+			const indicator = screen.getByTestId('recording-indicator');
+			expect(indicator.dataset.state).toBe('error');
+			expect(screen.getByTestId('recording-error-message').textContent).toContain(
+				'ggml-base.en.bin'
+			);
+		});
+	});
+
+	it('dismiss button on the indicator returns to idle', async () => {
+		const { t } = makeTransport({
+			start_recording: () => {
+				throw { code: 'audio', message: 'no input device' };
+			}
+		});
+		setIpcTransport(t);
+		const user = userEvent.setup();
+		render(Capture);
+		await user.click(screen.getByTestId('record-button'));
+		await waitFor(() => {
+			expect(screen.getByTestId('recording-indicator').dataset.state).toBe('error');
+		});
+		await user.click(screen.getByTestId('recording-dismiss'));
+		expect(screen.queryByTestId('recording-indicator')).toBeNull();
+	});
+
+	it('save button is disabled while recording or transcribing', async () => {
+		let stopResolver: (s: string) => void = () => {};
+		const stopPromise = new Promise<string>((r) => {
+			stopResolver = r;
+		});
+		const { t } = makeTransport({
+			start_recording: () => undefined,
+			stop_recording_and_transcribe: () => stopPromise
+		});
+		setIpcTransport(t);
+		const user = userEvent.setup();
+		render(Capture);
+
+		const textarea = screen.getByLabelText('Capture a note') as HTMLTextAreaElement;
+		await user.type(textarea, 'something');
+		expect(screen.getByTestId('save-button')).not.toBeDisabled();
+
+		await user.click(screen.getByTestId('record-button'));
+		await waitFor(() => {
+			expect(screen.getByTestId('recording-indicator').dataset.state).toBe('recording');
+		});
+		expect(screen.getByTestId('save-button')).toBeDisabled();
+
+		await user.click(screen.getByTestId('recording-stop'));
+		await waitFor(() => {
+			expect(screen.getByTestId('recording-indicator').dataset.state).toBe('transcribing');
+		});
+		expect(screen.getByTestId('save-button')).toBeDisabled();
+
+		stopResolver('hello');
+		await waitFor(() => {
+			expect(screen.queryByTestId('recording-indicator')).toBeNull();
+		});
+		expect(screen.getByTestId('save-button')).not.toBeDisabled();
 	});
 });
