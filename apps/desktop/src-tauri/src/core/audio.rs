@@ -5,6 +5,14 @@
 //! and the whisper.cpp inference task. Per ADR-010 (voice/STT toolchain),
 //! captured audio never touches disk — this buffer zeroes its contents on
 //! drop so samples don't linger in freed memory after a transcription run.
+//!
+//! This module also defines the [`AudioHost`] / [`AudioStream`] traits and
+//! [`CaptureSession`] entry point. The traits exist so tests can drive the
+//! capture pipeline with a deterministic mock host; the concrete cpal-backed
+//! implementation lives in `crate::audio_backend` (outside `core/` because
+//! it imports `cpal::*`, which `core/` is forbidden from doing).
+
+use std::sync::{Arc, Mutex};
 
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -97,6 +105,196 @@ impl Default for SampleBuffer {
     }
 }
 
+// -----------------------------------------------------------------------------
+// CaptureSession — abstraction over a real-time audio input stream.
+// -----------------------------------------------------------------------------
+
+/// Configuration of the input stream as reported by the host.
+///
+/// `CaptureSession` records at whatever native config the device prefers and
+/// surfaces it here. Downmixing-to-mono and resampling-to-16kHz (whisper's
+/// expected input) are the *caller's* job in a follow-up task — keeping the
+/// raw config visible avoids a hidden lossy conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioInputConfig {
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+/// Errors surfaced from audio capture. Hardware-coupling errors (cpal's many
+/// `BuildStreamError` variants) collapse into [`AudioError::StreamBuild`] so
+/// `core/` can handle them without depending on cpal's types.
+#[derive(Debug, thiserror::Error)]
+pub enum AudioError {
+    #[error("no default input device available")]
+    NoInputDevice,
+    #[error("failed to build input stream: {0}")]
+    StreamBuild(String),
+    #[error("requested duration would overflow buffer capacity")]
+    DurationOverflow,
+    #[error("invalid recording duration: {msg}")]
+    InvalidDuration { msg: String },
+}
+
+/// Callback the audio host invokes with each chunk of interleaved-by-channel
+/// f32 samples. Boxed so the host can store it across thread boundaries.
+pub type SamplesCallback = Box<dyn FnMut(&[f32]) + Send + 'static>;
+
+/// Abstraction over an audio host (cpal in production, a deterministic fake
+/// in tests). Implementors live outside `core/` if they need to import
+/// hardware crates.
+pub trait AudioHost {
+    /// The host's preferred input config — used by [`start_capture`] to size
+    /// the pre-allocated buffer.
+    fn default_input_config(&self) -> Result<AudioInputConfig, AudioError>;
+    /// Begin streaming. The host calls `on_samples` with interleaved-by-channel
+    /// f32 chunks. The returned [`AudioStream`] must keep the underlying
+    /// stream alive; dropping it stops capture.
+    fn start_input(
+        &self,
+        config: &AudioInputConfig,
+        on_samples: SamplesCallback,
+    ) -> Result<Box<dyn AudioStream>, AudioError>;
+}
+
+/// Opaque handle to a running input stream. Drop stops the stream.
+pub trait AudioStream: Send + 'static {}
+
+/// Active recording. Drop = stop without draining; `stop_and_drain` = stop +
+/// take samples.
+pub struct CaptureSession {
+    config: AudioInputConfig,
+    samples: Arc<Mutex<SampleBuffer>>,
+    stream: Box<dyn AudioStream>,
+}
+
+/// Result of [`CaptureSession::stop_and_drain`].
+pub struct CaptureResult {
+    pub samples: Vec<f32>,
+    pub config: AudioInputConfig,
+}
+
+/// Start capturing up to `max_seconds` of audio at the host's native config.
+///
+/// The buffer is pre-allocated for `max_seconds * sample_rate * channels`
+/// samples. Overflow past that capacity is dropped silently rather than
+/// panicking — callbacks come from a background thread and a panic there is
+/// hard to recover from. Callers who care about exact length should pass
+/// generous `max_seconds`.
+pub fn start_capture(host: &dyn AudioHost, max_seconds: f32) -> Result<CaptureSession, AudioError> {
+    let config = host.default_input_config()?;
+    if !(max_seconds.is_finite() && max_seconds > 0.0) {
+        return Err(AudioError::InvalidDuration {
+            msg: format!("max_seconds must be finite and > 0, got {max_seconds}"),
+        });
+    }
+    let max_samples = (max_seconds * config.sample_rate as f32) as usize * config.channels as usize;
+    if max_samples == 0 {
+        return Err(AudioError::InvalidDuration {
+            msg: format!(
+                "max_seconds={max_seconds} produces zero samples at sample_rate={} channels={}",
+                config.sample_rate, config.channels
+            ),
+        });
+    }
+    let samples = Arc::new(Mutex::new(SampleBuffer::with_capacity(max_samples)));
+    let buf_for_cb = Arc::clone(&samples);
+    let stream = host.start_input(
+        &config,
+        Box::new(move |chunk: &[f32]| {
+            // Best-effort: if the mutex is poisoned we drop samples rather than
+            // panic on the callback thread. If the buffer is full we truncate
+            // to the remaining capacity — same reason.
+            if let Ok(mut buf) = buf_for_cb.lock() {
+                let head = chunk.len().min(buf.remaining_capacity());
+                if head > 0 {
+                    buf.push(&chunk[..head]);
+                }
+            }
+        }),
+    )?;
+    Ok(CaptureSession {
+        config,
+        samples,
+        stream,
+    })
+}
+
+impl CaptureSession {
+    /// The native input config the host selected for this stream.
+    pub fn config(&self) -> &AudioInputConfig {
+        &self.config
+    }
+
+    /// Stop the stream, drain the buffer, return ownership of the samples.
+    pub fn stop_and_drain(self) -> Result<CaptureResult, AudioError> {
+        // Drop the stream first so no more callbacks fire while we lock the
+        // samples mutex. Dropping a `Box<dyn AudioStream>` is what cpal needs
+        // to halt the input thread.
+        drop(self.stream);
+        let mut buf = self
+            .samples
+            .lock()
+            .map_err(|_| AudioError::StreamBuild("samples mutex poisoned during capture".into()))?;
+        let samples = buf.drain_to_vec();
+        Ok(CaptureResult {
+            samples,
+            config: self.config,
+        })
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Test-only mock host. Lives in core/ because the tests below need it; gated
+// behind #[cfg(test)] so the production binary never sees it.
+// -----------------------------------------------------------------------------
+
+#[cfg(test)]
+type MockFeed = Box<dyn FnOnce(&mut dyn FnMut(&[f32])) + Send>;
+
+#[cfg(test)]
+pub(crate) struct MockAudioHost {
+    config: AudioInputConfig,
+    feed: Mutex<Option<MockFeed>>,
+}
+
+#[cfg(test)]
+impl MockAudioHost {
+    pub fn new<F>(config: AudioInputConfig, feed: F) -> Self
+    where
+        F: FnOnce(&mut dyn FnMut(&[f32])) + Send + 'static,
+    {
+        Self {
+            config,
+            feed: Mutex::new(Some(Box::new(feed))),
+        }
+    }
+}
+
+#[cfg(test)]
+struct MockStream;
+#[cfg(test)]
+impl AudioStream for MockStream {}
+
+#[cfg(test)]
+impl AudioHost for MockAudioHost {
+    fn default_input_config(&self) -> Result<AudioInputConfig, AudioError> {
+        Ok(self.config.clone())
+    }
+
+    fn start_input(
+        &self,
+        _config: &AudioInputConfig,
+        mut on_samples: SamplesCallback,
+    ) -> Result<Box<dyn AudioStream>, AudioError> {
+        // Run the feed synchronously so the test sees data immediately.
+        if let Some(feed) = self.feed.lock().unwrap().take() {
+            feed(&mut |chunk| on_samples(chunk));
+        }
+        Ok(Box::new(MockStream))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +346,99 @@ mod tests {
         let mut buf = SampleBuffer::with_capacity(4);
         buf.push(&[1.0, 2.0, 3.0]);
         buf.push(&[4.0, 5.0]); // 3+2=5 > 4 → panic
+    }
+
+    // -------------------------------------------------------------------------
+    // CaptureSession tests, driven by MockAudioHost.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn capture_session_collects_into_buffer_under_500ms() {
+        use std::time::{Duration, Instant};
+
+        // Mock host emits 4 chunks of 2000 samples = 8000 total at 8 kHz mono.
+        let host = MockAudioHost::new(
+            AudioInputConfig {
+                sample_rate: 8000,
+                channels: 1,
+            },
+            |on_samples| {
+                for chunk_i in 0..4 {
+                    let chunk: Vec<f32> = (0..2000)
+                        .map(|i| ((chunk_i * 2000 + i) as f32) * 0.001)
+                        .collect();
+                    on_samples(&chunk);
+                }
+            },
+        );
+
+        let started = Instant::now();
+        let session = start_capture(&host, /* max_seconds */ 2.0).unwrap();
+        let result = session.stop_and_drain().unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(result.config.sample_rate, 8000);
+        assert_eq!(result.config.channels, 1);
+        assert_eq!(result.samples.len(), 8000);
+        // First chunk: i=0..1999, scaled by 0.001 → samples[0]==0.0, samples[2000]==2.0.
+        assert_eq!(result.samples[0], 0.0);
+        assert!(
+            (result.samples[2000] - 2.0).abs() < 1e-3,
+            "samples[2000] should be ~2.0, got {}",
+            result.samples[2000]
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "mocked capture should be fast; took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn capture_overflow_is_dropped_silently_not_panicked() {
+        // 1 second × 1000 Hz × 1 ch = 1000 sample capacity; feed 5000.
+        let host = MockAudioHost::new(
+            AudioInputConfig {
+                sample_rate: 1000,
+                channels: 1,
+            },
+            |on_samples| {
+                let big: Vec<f32> = vec![0.5; 5000];
+                on_samples(&big);
+            },
+        );
+        let session = start_capture(&host, 1.0).unwrap();
+        let result = session.stop_and_drain().unwrap();
+        assert_eq!(result.samples.len(), 1000);
+    }
+
+    #[test]
+    fn capture_session_reports_config() {
+        let host = MockAudioHost::new(
+            AudioInputConfig {
+                sample_rate: 44100,
+                channels: 2,
+            },
+            |_on_samples| { /* no samples */ },
+        );
+        let session = start_capture(&host, 1.0).unwrap();
+        assert_eq!(session.config().sample_rate, 44100);
+        assert_eq!(session.config().channels, 2);
+        let _ = session.stop_and_drain().unwrap();
+    }
+
+    #[test]
+    fn capture_zero_duration_is_an_error() {
+        let host = MockAudioHost::new(
+            AudioInputConfig {
+                sample_rate: 16000,
+                channels: 1,
+            },
+            |_on_samples| {},
+        );
+        let result = start_capture(&host, 0.0);
+        assert!(matches!(
+            result.err(),
+            Some(AudioError::InvalidDuration { .. })
+        ));
     }
 }

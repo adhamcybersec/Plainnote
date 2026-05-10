@@ -33,6 +33,10 @@ notify-rust = { version = "4", default-features = false, features = ["d"] }
 
 # M4 voice/STT — see docs/plans/2026-05-07-v0.2-release.md
 zeroize = { version = "=1.8.1", features = ["derive"] }
+# voice capture (M4-T2). Pinned exact: spike (ADR-010) found cpal's API
+# changed between 0.15 and 0.17, and we depend on the 0.17 build_input_stream
+# signature with the `Option<Duration>` timeout argument.
+cpal = "=0.17.3"
 
 [dev-dependencies]
 proptest = "1"

@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// `audio_backend` is the cpal-backed implementation of `core::audio::AudioHost`.
+// Nothing references it yet — it'll be wired into `commands.rs` in M4-T6 — so
+// suppress the unused-module warning until then.
+#[allow(dead_code)]
+mod audio_backend;
 pub mod commands;
 pub mod core;
 
