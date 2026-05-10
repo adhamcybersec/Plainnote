@@ -63,6 +63,56 @@ finish-args:
   # view falls back to software rendering and pegs a CPU core at 5k nodes.
   - --device=dri
 
+  # ────────────────────────────────────────────────────────────────────
+  # Audio capture (M4) — local STT via whisper.cpp. cpal 0.17 on Linux
+  # links against ALSA, which on a modern desktop (PipeWire 1.x with the
+  # pipewire-pulse compat shim) routes capture through the Pulse socket.
+  #
+  # Two flags, both required as defense-in-depth:
+  #
+  #   --socket=pulseaudio
+  #     Exposes the host's PulseAudio socket inside the sandbox. On a
+  #     PipeWire host (the common case in 2026 on Ubuntu/Fedora), this
+  #     IS pipewire-pulse — the compatibility daemon that speaks the
+  #     Pulse protocol on top of PipeWire. cpal/ALSA's default capture
+  #     path goes through this socket, so without it `cpal` enumerates
+  #     zero input devices.
+  #
+  #   --filesystem=xdg-run/pipewire-0:ro
+  #     Read-only access to the PipeWire socket itself. Some cpal/ALSA
+  #     configurations talk directly to PipeWire when XDG_RUNTIME_DIR
+  #     exposes /run/user/$UID/pipewire-0, bypassing the Pulse compat
+  #     shim for lower latency. On hosts where pipewire-pulse is
+  #     misconfigured or absent (uncommon, but it happens), this is the
+  #     fallback that keeps capture working. `:ro` is sufficient: we
+  #     read mic input; we never publish a virtual audio source.
+  #
+  # Verification status: the M4-T0 spike (ADR-010) confirmed Adham's
+  # dev box runs PipeWire + pipewire-pulse + wireplumber, so the Pulse
+  # path is the expected primary route. **Spike Phase 2 (sandbox-side
+  # audio smoke) was deferred** — these flags are the documented
+  # MINIMUM but were not exercised end-to-end through flatpak-builder
+  # at spike time. Before tagging v0.2.0: build the .flatpak from this
+  # branch, `flatpak install --user --reinstall plainnote.flatpak`,
+  # launch, click Record, speak, see transcript. If capture fails, the
+  # fallback ladder lives in docs/plans/M4-T0-spike-runbook.md:
+  #   1. Verify host: `systemctl --user status pipewire pipewire-pulse
+  #      wireplumber` — all three should be active.
+  #   2. Capture stderr from the sandboxed binary
+  #      (`flatpak run --command=sh dev.plainnote.app -c 'plainnote 2>&1'`).
+  #   3. As a last resort try `--device=all` (broader hardware access;
+  #      we'd prefer NOT to ship that — it's strictly worse than the
+  #      two-flag minimum here).
+  #
+  # Network is intentionally NOT granted for STT. Whisper.cpp runs
+  # entirely locally against a model file under XDG_DATA_HOME. Voice =
+  # local, full stop. `--share=network` is reserved for the M-Sync
+  # milestone (P2P sync, v0.2.0+) where it'll be introduced as a
+  # deliberate, surfaced permission change per ADR-009 §6.
+  # ────────────────────────────────────────────────────────────────────
+  - --socket=pulseaudio
+  - --filesystem=xdg-run/pipewire-0:ro
+
   # D-Bus / notifications: notify-rust talks straight to
   # org.freedesktop.Notifications. Required for reminder delivery. We use
   # D-Bus directly rather than xdg-desktop-portal::Notification because the
@@ -79,9 +129,12 @@ finish-args:
   # ────────────────────────────────────────────────────────────────────
   # NOT GRANTED — and why. Re-grant later only with a justification.
   # ────────────────────────────────────────────────────────────────────
-  # --share=network         : v0.1 ships zero network features. P2P sync
-  #                           will need this in v0.2; until then, the app
-  #                           is offline-only and that's a hard guarantee.
+  # --share=network         : v0.1 shipped zero network features and
+  #                           v0.2's voice/STT is also fully local
+  #                           (whisper.cpp runs against an on-disk model).
+  #                           P2P sync (M-Sync) will need this; until
+  #                           that ships, the app is offline-only and
+  #                           that's a hard guarantee.
   # --talk-name=org.freedesktop.secrets : we don't use libsecret.
   # --filesystem=host       : would expose /, /usr, /opt — the vault never
   #                           needs to read system paths.
