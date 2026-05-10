@@ -37,11 +37,27 @@ zeroize = { version = "=1.8.1", features = ["derive"] }
 # changed between 0.15 and 0.17, and we depend on the 0.17 build_input_stream
 # signature with the `Option<Duration>` timeout argument.
 cpal = "=0.17.3"
+# whisper.cpp Rust binding (M4-T4). Pinned exact per ADR-010: spike confirmed
+# 0.16.0 builds and runs the bundled ggml-base.en model on CPU; minor versions
+# of whisper-rs have historically broken FullParams/SamplingStrategy APIs.
+whisper-rs = "=0.16.0"
+
+[features]
+# Enables tests that load a real whisper model file from disk. Off by default
+# in CI because no model is bundled; the gated test reads its model path from
+# `PLAINNOTE_TEST_MODEL_PATH` (or falls back to ~/Downloads/ggml-base.en.bin)
+# and skips with a message if the file is absent. See core::stt tests.
+whisper-integration = []
 
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+# Used by the gated `whisper-integration` test to resolve ~/Downloads.
+# dirs is dev-only here; M4-T5 will promote it to a regular [dependencies]
+# entry for runtime XDG model-path resolution. When that lands, remove
+# this dev-deps entry to avoid a duplicate listing.
+dirs = "6"
 
 [[bench]]
 name = "tag_query"
