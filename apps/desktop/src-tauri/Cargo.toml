@@ -30,6 +30,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 rand = { version = "0.8", default-features = false }
 rand_chacha = { version = "0.3", default-features = false }
 notify-rust = { version = "4", default-features = false, features = ["d"] }
+# XDG model-path resolution for whisper.cpp .bin files (M4-T5).
+dirs = "=6.0.0"
 
 # M4 voice/STT — see docs/plans/2026-05-07-v0.2-release.md
 zeroize = { version = "=1.8.1", features = ["derive"] }
@@ -53,11 +55,6 @@ whisper-integration = []
 proptest = "1"
 tempfile = "3"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
-# Used by the gated `whisper-integration` test to resolve ~/Downloads.
-# dirs is dev-only here; M4-T5 will promote it to a regular [dependencies]
-# entry for runtime XDG model-path resolution. When that lands, remove
-# this dev-deps entry to avoid a duplicate listing.
-dirs = "6"
 
 [[bench]]
 name = "tag_query"

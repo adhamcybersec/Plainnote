@@ -36,6 +36,32 @@ pub enum SttError {
     EmptyInput,
 }
 
+const APP_NAMESPACE: &str = "plainnote";
+const MODELS_SUBDIR: &str = "models";
+const DEFAULT_MODEL_FILE: &str = "ggml-base.en.bin";
+
+/// Pure helper: build the models dir given a chosen XDG data dir. Kept
+/// separate so tests can verify path composition without touching env vars.
+fn default_models_dir_in(data_dir: &Path) -> PathBuf {
+    data_dir.join(APP_NAMESPACE).join(MODELS_SUBDIR)
+}
+
+/// Directory where Plainnote looks for whisper.cpp model files. Resolved per
+/// XDG Base Directory: `$XDG_DATA_HOME/plainnote/models/`, or
+/// `~/.local/share/plainnote/models/` if XDG_DATA_HOME is not set.
+///
+/// On systems where neither resolves (extremely rare), falls back to
+/// `./plainnote/models/` relative to the current working directory.
+pub fn default_models_dir() -> PathBuf {
+    default_models_dir_in(&dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")))
+}
+
+/// Default whisper model path: `<default_models_dir()>/ggml-base.en.bin`.
+/// Users can override via Settings (M4-T9) to point at a different model.
+pub fn default_model_path() -> PathBuf {
+    default_models_dir().join(DEFAULT_MODEL_FILE)
+}
+
 /// Owns a loaded whisper.cpp model. `Send + Sync` (inherited from
 /// `WhisperContext`'s internal `Arc<WhisperInnerContext>`).
 ///
@@ -62,6 +88,13 @@ impl WhisperEngine {
         let ctx = WhisperContext::new_with_params(path_str, WhisperContextParameters::default())
             .map_err(|e| SttError::WhisperInit(e.to_string()))?;
         Ok(Self { ctx })
+    }
+
+    /// Convenience: load whisper from the XDG default model path.
+    /// Returns `SttError::ModelMissing` if the user has not placed a model
+    /// file at that location yet (the first-run UX path; see M4-T11).
+    pub fn from_default_model() -> Result<Self, SttError> {
+        Self::from_model_file(&default_model_path())
     }
 
     /// Transcribe `samples` (16 kHz mono f32). Returns the concatenated text
@@ -104,6 +137,37 @@ impl WhisperEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_model_path_ends_with_ggml_base_en() {
+        let p = default_model_path();
+        let last = p.file_name().expect("file name").to_string_lossy();
+        assert_eq!(last, "ggml-base.en.bin");
+    }
+
+    #[test]
+    fn default_models_dir_is_parent_of_default_model_path() {
+        let dir = default_models_dir();
+        let model = default_model_path();
+        assert_eq!(model.parent().unwrap(), dir);
+    }
+
+    #[test]
+    fn default_model_path_lives_under_plainnote_models() {
+        let p = default_model_path();
+        let s = p.to_string_lossy();
+        assert!(
+            s.ends_with("plainnote/models/ggml-base.en.bin"),
+            "unexpected default path: {s}"
+        );
+    }
+
+    #[test]
+    fn default_models_dir_in_appends_namespace_and_subdir() {
+        use std::path::Path;
+        let dir = default_models_dir_in(Path::new("/tmp/xdg"));
+        assert_eq!(dir, Path::new("/tmp/xdg/plainnote/models"));
+    }
 
     #[test]
     fn whisper_engine_returns_model_missing_error() {
