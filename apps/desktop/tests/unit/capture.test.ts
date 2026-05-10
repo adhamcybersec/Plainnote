@@ -157,10 +157,69 @@ describe('Capture screen', () => {
 		expect(screen.queryByTestId('recording-indicator')).toBeNull();
 	});
 
-	it('record button shows error message when start_recording fails with model_missing', async () => {
+	it('shows ModelMissingDialog when start_recording returns model_missing', async () => {
+		const path = '/home/u/.local/share/plainnote/models/ggml-base.en.bin';
 		const { t } = makeTransport({
 			start_recording: () => {
-				throw { code: 'model_missing', message: '/home/.../ggml-base.en.bin' };
+				throw { code: 'model_missing', message: path };
+			}
+		});
+		setIpcTransport(t);
+		const user = userEvent.setup();
+		render(Capture);
+		await user.click(screen.getByTestId('record-button'));
+		await waitFor(() => {
+			expect(screen.getByTestId('model-missing-dialog')).toBeInTheDocument();
+		});
+		// The generic error chip is suppressed when the dialog is up.
+		expect(screen.queryByTestId('recording-indicator')).toBeNull();
+	});
+
+	it('Cancel on the model-missing dialog returns the page to idle', async () => {
+		const { t } = makeTransport({
+			start_recording: () => {
+				throw { code: 'model_missing', message: '/x.bin' };
+			}
+		});
+		setIpcTransport(t);
+		const user = userEvent.setup();
+		render(Capture);
+		await user.click(screen.getByTestId('record-button'));
+		await waitFor(() => screen.getByTestId('model-missing-dialog'));
+		await user.click(screen.getByTestId('model-missing-cancel'));
+		expect(screen.queryByTestId('model-missing-dialog')).toBeNull();
+	});
+
+	it('Retry on the model-missing dialog re-invokes start_recording', async () => {
+		let calls = 0;
+		const handlers: Record<string, (args?: Record<string, unknown>) => unknown> = {
+			start_recording: () => {
+				calls += 1;
+				if (calls === 1) {
+					throw { code: 'model_missing', message: '/x.bin' };
+				}
+				// Second call succeeds.
+				return undefined;
+			}
+		};
+		const { t } = makeTransport(handlers);
+		setIpcTransport(t);
+		const user = userEvent.setup();
+		render(Capture);
+		await user.click(screen.getByTestId('record-button'));
+		await waitFor(() => screen.getByTestId('model-missing-dialog'));
+		await user.click(screen.getByTestId('model-missing-retry'));
+		await waitFor(() => {
+			expect(screen.queryByTestId('model-missing-dialog')).toBeNull();
+			expect(screen.getByTestId('recording-indicator').dataset.state).toBe('recording');
+		});
+		expect(calls).toBe(2);
+	});
+
+	it('non-model_missing errors still show the generic indicator chip', async () => {
+		const { t } = makeTransport({
+			start_recording: () => {
+				throw { code: 'no_input_device', message: 'no mic' };
 			}
 		});
 		setIpcTransport(t);
@@ -170,10 +229,9 @@ describe('Capture screen', () => {
 		await waitFor(() => {
 			const indicator = screen.getByTestId('recording-indicator');
 			expect(indicator.dataset.state).toBe('error');
-			expect(screen.getByTestId('recording-error-message').textContent).toContain(
-				'ggml-base.en.bin'
-			);
 		});
+		// No model-missing dialog.
+		expect(screen.queryByTestId('model-missing-dialog')).toBeNull();
 	});
 
 	it('dismiss button on the indicator returns to idle', async () => {

@@ -16,6 +16,7 @@
 	import type { IpcError } from '$lib/ipc';
 	import { announce } from '$lib/status';
 	import RecordingIndicator from '$lib/components/RecordingIndicator.svelte';
+	import ModelMissingDialog from '$lib/components/ModelMissingDialog.svelte';
 
 	let body = $state('');
 	let saving = $state(false);
@@ -25,6 +26,10 @@
 	let savedTimer: ReturnType<typeof setTimeout> | null = null;
 
 	let recState = $state<RecordingState>({ kind: 'idle' });
+	// Parallel to recState — only meaningful when recState.kind === 'error'.
+	// Tracked separately so the page can branch on the IPC error code without
+	// changing RecordingIndicator's wire-type prop. See M4-T11.
+	let lastErrorCode = $state<string | null>(null);
 
 	async function save() {
 		const trimmed = body.trim();
@@ -63,9 +68,11 @@
 		try {
 			await startRecording();
 			recState = { kind: 'recording', started_at_ms: Date.now() };
+			lastErrorCode = null;
 			announce('Recording started.');
 		} catch (e) {
 			const ipc = e as Partial<IpcError>;
+			lastErrorCode = ipc?.code ?? null;
 			recState = { kind: 'error', message: ipc?.message ?? String(e) };
 			announce(`Recording failed: ${ipc?.message ?? 'unknown'}`);
 		}
@@ -79,9 +86,11 @@
 			const transcript = await stopRecordingAndTranscribe();
 			insertTranscriptAtCursor(transcript);
 			recState = { kind: 'idle' };
+			lastErrorCode = null;
 			announce('Transcript inserted.');
 		} catch (e) {
 			const ipc = e as Partial<IpcError>;
+			lastErrorCode = ipc?.code ?? null;
 			recState = { kind: 'error', message: ipc?.message ?? String(e) };
 			announce(`Transcription failed: ${ipc?.message ?? 'unknown'}`);
 		}
@@ -90,6 +99,7 @@
 	function dismissRecError() {
 		if (recState.kind === 'error') {
 			recState = { kind: 'idle' };
+			lastErrorCode = null;
 		}
 	}
 
@@ -153,7 +163,33 @@
 			>
 		</div>
 
-		<RecordingIndicator state={recState} onStop={stopRecord} onDismiss={dismissRecError} />
+		<!--
+			When the model-missing dialog is up, force the indicator to idle so
+			the user sees exactly one error surface. Other error codes
+			(no_input_device, audio, stt) still flow through the indicator chip.
+		-->
+		<RecordingIndicator
+			state={recState.kind === 'error' && lastErrorCode === 'model_missing'
+				? { kind: 'idle' }
+				: recState}
+			onStop={stopRecord}
+			onDismiss={dismissRecError}
+		/>
+
+		{#if recState.kind === 'error' && lastErrorCode === 'model_missing'}
+			<ModelMissingDialog
+				expectedPath={recState.message}
+				onRetry={async () => {
+					recState = { kind: 'idle' };
+					lastErrorCode = null;
+					await startRecord();
+				}}
+				onCancel={() => {
+					recState = { kind: 'idle' };
+					lastErrorCode = null;
+				}}
+			/>
+		{/if}
 
 		<div class="pn-capture__hint">
 			Press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to save · Tags can be added later.
