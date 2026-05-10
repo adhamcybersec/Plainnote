@@ -245,6 +245,52 @@ impl CaptureSession {
 }
 
 // -----------------------------------------------------------------------------
+// to_whisper_format — convert raw native-format samples to whisper's input.
+// -----------------------------------------------------------------------------
+
+/// Convert raw native-format samples (multi-channel, native sample rate, f32)
+/// into the 16 kHz mono f32 layout that whisper-rs expects. Downmixes by
+/// averaging channels; linear-interpolates to 16 kHz.
+///
+/// TODO(M4-followup): replace linear-interp with `rubato` for production
+/// quality. Linear interp introduces audible aliasing on speech but is good
+/// enough for our spike-grade pipeline; whisper.cpp internally re-mels so
+/// minor aliasing degrades transcription only slightly.
+pub fn to_whisper_format(raw: &[f32], config: &AudioInputConfig) -> Vec<f32> {
+    // 1. Downmix to mono.
+    let mono: Vec<f32> = if config.channels <= 1 {
+        raw.to_vec()
+    } else {
+        let ch = config.channels as usize;
+        raw.chunks_exact(ch)
+            .map(|frame| frame.iter().sum::<f32>() / ch as f32)
+            .collect()
+    };
+    // 2. Resample to 16 kHz via linear interp (spike-grade).
+    const TARGET: u32 = 16_000;
+    if config.sample_rate == TARGET {
+        return mono;
+    }
+    if mono.is_empty() {
+        return mono;
+    }
+    let src_sr = config.sample_rate as f64;
+    let dst_sr = TARGET as f64;
+    let ratio = dst_sr / src_sr;
+    let dst_len = ((mono.len() as f64) * ratio).round() as usize;
+    let mut out = Vec::with_capacity(dst_len);
+    for i in 0..dst_len {
+        let src_pos = (i as f64) / ratio;
+        let src_idx = src_pos.floor() as usize;
+        let frac = (src_pos - src_idx as f64) as f32;
+        let a = mono.get(src_idx).copied().unwrap_or(0.0);
+        let b = mono.get(src_idx + 1).copied().unwrap_or(a);
+        out.push(a + frac * (b - a));
+    }
+    out
+}
+
+// -----------------------------------------------------------------------------
 // Test-only mock host. Lives in core/ because the tests below need it; gated
 // behind #[cfg(test)] so the production binary never sees it.
 // -----------------------------------------------------------------------------
@@ -424,6 +470,56 @@ mod tests {
         assert_eq!(session.config().sample_rate, 44100);
         assert_eq!(session.config().channels, 2);
         let _ = session.stop_and_drain().unwrap();
+    }
+
+    // -------------------------------------------------------------------------
+    // to_whisper_format conversion (M4-T6).
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn to_whisper_format_passthrough_when_already_target() {
+        let input = vec![0.1, 0.2, 0.3];
+        let cfg = AudioInputConfig {
+            sample_rate: 16000,
+            channels: 1,
+        };
+        let out = to_whisper_format(&input, &cfg);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn to_whisper_format_downmixes_stereo_to_mono() {
+        // 4 stereo frames at 16 kHz: (1.0,3.0),(2.0,4.0),(3.0,5.0),(4.0,6.0)
+        let input = vec![1.0, 3.0, 2.0, 4.0, 3.0, 5.0, 4.0, 6.0];
+        let cfg = AudioInputConfig {
+            sample_rate: 16000,
+            channels: 2,
+        };
+        let out = to_whisper_format(&input, &cfg);
+        assert_eq!(out, vec![2.0, 3.0, 4.0, 5.0]); // averaged channels
+    }
+
+    // Pins length + endpoint amplitudes only. Audio QUALITY (speech-band aliasing)
+    // is verified manually via the M4-T0 spike's recognizable transcript, not
+    // here. When `rubato` lands (M4-followup), extend this test to assert
+    // frequency-domain noise floor.
+    #[test]
+    fn to_whisper_format_resamples_32k_mono_to_16k() {
+        // Build a 32 kHz signal of 1024 samples; expect ~512 at 16 kHz.
+        let input: Vec<f32> = (0..1024).map(|i| (i as f32) * 0.001).collect();
+        let cfg = AudioInputConfig {
+            sample_rate: 32000,
+            channels: 1,
+        };
+        let out = to_whisper_format(&input, &cfg);
+        // Linear interp gives len = round(1024 * 16000 / 32000) = 512.
+        assert!(
+            (out.len() as i64 - 512).abs() <= 1,
+            "expected ~512, got {}",
+            out.len()
+        );
+        assert!((out[0] - 0.0).abs() < 0.01);
+        assert!((out.last().unwrap() - 1.022).abs() < 0.05);
     }
 
     #[test]

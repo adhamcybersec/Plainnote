@@ -6,15 +6,35 @@
 //! unit-testable without launching a webview (ADR-003).
 
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
+use crate::audio_backend::CpalHost;
+use crate::core::audio::{self, AudioError, CaptureSession};
 use crate::core::graph;
 use crate::core::ids::NoteId;
 use crate::core::index::Index;
 use crate::core::query::{self, QueryMode};
 use crate::core::reminder_scheduler::Wake;
 use crate::core::reminders::{self, ReminderFilter};
+use crate::core::stt::{SttError, WhisperEngine};
 use crate::core::vault::{NoteSummary, Vault};
+
+/// Coarse user-facing state machine surfaced to the frontend via
+/// `get_transcription_state` (M4-T7 RecordingIndicator polls this).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RecordingState {
+    Idle,
+    Recording {
+        /// Unix epoch ms; the UI computes elapsed locally.
+        started_at_ms: u64,
+    },
+    Transcribing,
+    Error {
+        message: String,
+    },
+}
 
 /// Application state shared across Tauri commands.
 pub struct AppState {
@@ -24,6 +44,18 @@ pub struct AppState {
     /// created/cancelled. Optional so tests that build AppState by hand
     /// don't need to spin up the scheduler.
     pub reminder_wake: Option<tokio::sync::mpsc::UnboundedSender<Wake>>,
+    // ─── M4 voice ───
+    /// Loaded whisper engine. None until the user supplies a model file at
+    /// the resolved default path (or via Settings); set on first successful
+    /// load. Wrapped in Mutex<Option<...>> so M4-T9's Settings UI can swap
+    /// it without restarting the app.
+    pub whisper: Arc<Mutex<Option<Arc<WhisperEngine>>>>,
+    /// In-flight capture session. Some(session) between start_recording and
+    /// stop_recording_and_transcribe. None at all other times.
+    pub capture: Arc<Mutex<Option<CaptureSession>>>,
+    /// Coarse user-facing state machine; the frontend polls this for the
+    /// RecordingIndicator (M4-T7).
+    pub rec_state: Arc<Mutex<RecordingState>>,
 }
 
 /// Versioned wire types. Bumping a struct version is part of the IPC
@@ -92,6 +124,180 @@ impl IpcError {
             message: "could not acquire index lock".into(),
         }
     }
+    /// First-run UX: model file is not yet at the resolved default path
+    /// (M4-T11 will use this code to show a download prompt). The `message`
+    /// carries the path so the prompt can render it.
+    fn model_missing(path: impl Into<String>) -> Self {
+        Self {
+            code: "model_missing",
+            message: path.into(),
+        }
+    }
+    fn no_input_device() -> Self {
+        Self {
+            code: "no_input_device",
+            message: "no default audio input device".into(),
+        }
+    }
+    fn audio(message: impl Into<String>) -> Self {
+        Self {
+            code: "audio",
+            message: message.into(),
+        }
+    }
+    fn stt(message: impl Into<String>) -> Self {
+        Self {
+            code: "stt",
+            message: message.into(),
+        }
+    }
+}
+
+fn now_ms() -> Result<u64, IpcError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .map_err(|_| IpcError::invalid("system clock invalid (before unix epoch)"))
+}
+
+// ─── M4 voice commands ─────────────────────────────────────────────────────
+
+/// Begin a recording. Lazy-loads `WhisperEngine` from the default model path
+/// the first time it's called (so a user without the model only hits the
+/// error here, not at app startup). Captures over `CpalHost` at the host's
+/// preferred config; downmix + resample happen in `stop_recording_and_transcribe`.
+///
+/// Capacity cap: 300 s. At 44.1 kHz × 2 ch × 4 bytes = ~105 MB pre-allocated;
+/// acceptable for a voice-memo use case and far below any RAM ceiling on
+/// modern desktops. See ADR-010 / M4-T6 plan note.
+#[tauri::command]
+pub async fn start_recording(state: State<'_, AppState>) -> Result<(), IpcError> {
+    {
+        let rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+        if !matches!(*rec, RecordingState::Idle | RecordingState::Error { .. }) {
+            return Err(IpcError::invalid("already recording or transcribing"));
+        }
+    }
+
+    // Lazy-load whisper if not yet loaded. We do this *before* opening the
+    // audio device so a model_missing error never leaves a half-open stream.
+    {
+        let mut slot = state.whisper.lock().map_err(|_| IpcError::locked())?;
+        if slot.is_none() {
+            match WhisperEngine::from_default_model() {
+                Ok(eng) => {
+                    *slot = Some(Arc::new(eng));
+                }
+                Err(SttError::ModelMissing { path }) => {
+                    return Err(IpcError::model_missing(path.to_string_lossy().into_owned()));
+                }
+                Err(other) => return Err(IpcError::stt(other.to_string())),
+            }
+        }
+    }
+
+    // Hard cap: 5 minutes. See module note above.
+    const MAX_SECONDS: f32 = 300.0;
+    let host = CpalHost::new();
+    let session = audio::start_capture(&host, MAX_SECONDS).map_err(|e| match e {
+        AudioError::NoInputDevice => IpcError::no_input_device(),
+        other => IpcError::audio(other.to_string()),
+    })?;
+
+    {
+        let mut slot = state.capture.lock().map_err(|_| IpcError::locked())?;
+        *slot = Some(session);
+    }
+    {
+        let mut rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+        *rec = RecordingState::Recording {
+            started_at_ms: now_ms()?,
+        };
+    }
+    Ok(())
+}
+
+/// Stop the active session, downmix + resample, run whisper inference on a
+/// blocking task pool (per ADR-010 / ADR-008), return the transcript.
+///
+/// On error, leaves `rec_state` as `Error { message }` so the UI can surface
+/// it; the next `start_recording` resets to `Idle`.
+#[tauri::command]
+pub async fn stop_recording_and_transcribe(state: State<'_, AppState>) -> Result<String, IpcError> {
+    // Confirm we're actually recording.
+    {
+        let rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+        if !matches!(*rec, RecordingState::Recording { .. }) {
+            return Err(IpcError::invalid("not recording"));
+        }
+    }
+
+    // Take the session out of state so we own it for the drain.
+    let session = {
+        let mut slot = state.capture.lock().map_err(|_| IpcError::locked())?;
+        slot.take()
+    };
+    let session = session.ok_or_else(|| IpcError::invalid("no active capture session"))?;
+
+    let drained = match session.stop_and_drain() {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = e.to_string();
+            let mut rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+            *rec = RecordingState::Error {
+                message: msg.clone(),
+            };
+            return Err(IpcError::audio(msg));
+        }
+    };
+
+    // Flip to Transcribing for the duration of the inference call.
+    {
+        let mut rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+        *rec = RecordingState::Transcribing;
+    }
+
+    // Clone Arc<WhisperEngine> so we can move it into the blocking task.
+    let engine: Arc<WhisperEngine> = {
+        let slot = state.whisper.lock().map_err(|_| IpcError::locked())?;
+        slot.as_ref().cloned().ok_or_else(|| {
+            IpcError::stt("whisper engine missing — start_recording should have loaded it")
+        })?
+    };
+
+    let pcm16k = audio::to_whisper_format(&drained.samples, &drained.config);
+
+    // Whisper inference is CPU-heavy and synchronous; run it on the blocking
+    // pool so it doesn't starve the IPC runtime. ADR-010 / ADR-008.
+    let transcript_res = tauri::async_runtime::spawn_blocking(move || engine.transcribe(&pcm16k))
+        .await
+        .map_err(|e| IpcError::stt(format!("blocking task join error: {e}")))?;
+
+    match transcript_res {
+        Ok(text) => {
+            let mut rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+            *rec = RecordingState::Idle;
+            Ok(text)
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let mut rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+            *rec = RecordingState::Error {
+                message: msg.clone(),
+            };
+            Err(IpcError::stt(msg))
+        }
+    }
+}
+
+/// UI poll endpoint (~100 ms while recording). Synchronous getter.
+#[tauri::command]
+pub fn get_transcription_state(state: State<'_, AppState>) -> Result<RecordingState, IpcError> {
+    state
+        .rec_state
+        .lock()
+        .map(|s| s.clone())
+        .map_err(|_| IpcError::locked())
 }
 
 /// Vault information surfaced in Settings: absolute path to the vault
@@ -706,6 +912,24 @@ mod tests {
         assert_eq!(json["source_title"], "Source");
         assert_eq!(json["source_preview"], "preview");
         assert_eq!(json["raw"], "[[Target]]");
+    }
+
+    #[test]
+    fn recording_state_serializes_with_kind_tag() {
+        let s = serde_json::to_string(&RecordingState::Idle).unwrap();
+        assert_eq!(s, r#"{"kind":"idle"}"#);
+        let s = serde_json::to_string(&RecordingState::Recording {
+            started_at_ms: 1234,
+        })
+        .unwrap();
+        assert_eq!(s, r#"{"kind":"recording","started_at_ms":1234}"#);
+        let s = serde_json::to_string(&RecordingState::Transcribing).unwrap();
+        assert_eq!(s, r#"{"kind":"transcribing"}"#);
+        let s = serde_json::to_string(&RecordingState::Error {
+            message: "x".into(),
+        })
+        .unwrap();
+        assert_eq!(s, r#"{"kind":"error","message":"x"}"#);
     }
 
     #[test]

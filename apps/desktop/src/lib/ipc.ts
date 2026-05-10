@@ -34,7 +34,15 @@ export interface Note {
 	body: string;
 }
 
-export type IpcErrorCode = 'io' | 'invalid' | 'not_found' | 'locked';
+export type IpcErrorCode =
+	| 'io'
+	| 'invalid'
+	| 'not_found'
+	| 'locked'
+	| 'model_missing'
+	| 'no_input_device'
+	| 'audio'
+	| 'stt';
 
 export interface IpcError {
 	code: IpcErrorCode;
@@ -247,4 +255,43 @@ export function outboundLinksOf(id: NoteId): Promise<LinkRef[]> {
 /** Notes that link *to* a given note (via resolved target_id). */
 export function backlinksFor(id: NoteId): Promise<Backlink[]> {
 	return transport<Backlink[]>('backlinks_for', { id });
+}
+
+// ─── Voice / STT (M4) ──────────────────────────────────────────────────────
+
+/**
+ * Coarse user-facing recording state machine. Mirrors the Rust
+ * `RecordingState` enum (serde tagged on `kind`, snake_case variants).
+ * The UI polls `getTranscriptionState()` every ~100 ms while recording
+ * (M4-T7 RecordingIndicator).
+ */
+export type RecordingState =
+	| { kind: 'idle' }
+	| { kind: 'recording'; started_at_ms: number }
+	| { kind: 'transcribing' }
+	| { kind: 'error'; message: string };
+
+/**
+ * Begin a recording. Lazy-loads the whisper model from the XDG default path
+ * on first call; subsequent calls reuse the loaded engine. Throws an
+ * `IpcError` with `code: 'model_missing'` (message = path) when the user
+ * has not placed a model file yet — M4-T11 catches this for the first-run
+ * prompt. Other failure codes: `'no_input_device'`, `'audio'`, `'stt'`.
+ */
+export function startRecording(): Promise<void> {
+	return transport<void>('start_recording');
+}
+
+/**
+ * Stop the active session and run whisper inference on a blocking task pool.
+ * Returns the transcript string. Errors leave `rec_state` as `error` until
+ * the next `startRecording()` resets it.
+ */
+export function stopRecordingAndTranscribe(): Promise<string> {
+	return transport<string>('stop_recording_and_transcribe');
+}
+
+/** Synchronous getter; UI polls this while recording / transcribing. */
+export function getTranscriptionState(): Promise<RecordingState> {
+	return transport<RecordingState>('get_transcription_state');
 }

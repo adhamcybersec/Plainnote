@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// `audio_backend` is the cpal-backed implementation of `core::audio::AudioHost`.
-// Nothing references it yet — it'll be wired into `commands.rs` in M4-T6 — so
-// suppress the unused-module warning until then.
-#[allow(dead_code)]
+// `audio_backend` is the cpal-backed implementation of `core::audio::AudioHost`,
+// wired into `commands.rs` for the M4 voice pipeline.
 mod audio_backend;
 pub mod commands;
 pub mod core;
@@ -11,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::Manager;
 
-use crate::commands::AppState;
+use crate::commands::{AppState, RecordingState};
 use crate::core::index::Index;
 use crate::core::reminder_scheduler::{self, DesktopNotifier, Wake};
 use crate::core::vault::Vault;
@@ -58,6 +56,9 @@ pub fn run() {
                 vault: vault.clone(),
                 index: index_arc.clone(),
                 reminder_wake: Some(wake_tx),
+                whisper: Arc::new(Mutex::new(None)),
+                capture: Arc::new(Mutex::new(None)),
+                rec_state: Arc::new(Mutex::new(RecordingState::Idle)),
             });
 
             // Spawn the filesystem watcher. Every debounced event triggers a
@@ -98,6 +99,9 @@ pub fn run() {
             commands::set_reminder,
             commands::cancel_reminder,
             commands::list_reminders,
+            commands::start_recording,
+            commands::stop_recording_and_transcribe,
+            commands::get_transcription_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
