@@ -295,3 +295,28 @@ export function stopRecordingAndTranscribe(): Promise<string> {
 export function getTranscriptionState(): Promise<RecordingState> {
 	return transport<RecordingState>('get_transcription_state');
 }
+
+/**
+ * The whisper-model path the engine will load on the next `startRecording`.
+ * `isDefault` is true when no override is in effect (path is the XDG default).
+ * Mirrors Rust `EffectiveModelPathV1`; field names are snake_case on the wire.
+ */
+export interface EffectiveModelPath {
+	path: string;
+	is_default: boolean;
+}
+
+/** Read the resolved model path the engine will use on next start. */
+export function getEffectiveModelPath(): Promise<EffectiveModelPath> {
+	return transport<EffectiveModelPath>('get_effective_model_path');
+}
+
+/**
+ * Set or clear the model-path override (M4-T9). Pass `null` (or empty string)
+ * to clear and fall back to the default. Validates the path exists; throws
+ * IpcError code='not_found' if not. On success drops any cached engine so
+ * the next recording reloads from the new path.
+ */
+export function setModelPath(path: string | null): Promise<EffectiveModelPath> {
+	return transport<EffectiveModelPath>('set_model_path', { path });
+}

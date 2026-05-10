@@ -17,8 +17,11 @@
 		cancelReminder,
 		vaultInfo,
 		reindexVault,
+		getEffectiveModelPath,
+		setModelPath,
 		type Reminder,
-		type VaultInfo
+		type VaultInfo,
+		type EffectiveModelPath
 	} from '$lib/ipc';
 	import {
 		leadTimePresets,
@@ -59,6 +62,11 @@
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
 
+	// ─── Voice & speech (M4-T9) ───────────────────────────────────────────
+	let effectiveModel = $state<EffectiveModelPath | null>(null);
+	let modelPathInput = $state('');
+	let modelPathError = $state<string | null>(null);
+
 	async function refreshReminders() {
 		try {
 			[active, fired] = await Promise.all([
@@ -93,9 +101,24 @@
 		appearance = await loadAndApplyAppearance();
 	}
 
+	async function refreshEffectiveModel() {
+		try {
+			effectiveModel = await getEffectiveModelPath();
+			modelPathInput = effectiveModel.is_default ? '' : effectiveModel.path;
+		} catch (e) {
+			const ipc = e as { message?: string };
+			errorMessage = ipc?.message ?? String(e);
+		}
+	}
+
 	onMount(async () => {
 		try {
-			await Promise.all([refreshReminders(), refreshVault(), loadPrefs()]);
+			await Promise.all([
+				refreshReminders(),
+				refreshVault(),
+				loadPrefs(),
+				refreshEffectiveModel()
+			]);
 		} finally {
 			loading = false;
 		}
@@ -140,6 +163,35 @@
 		} catch (e) {
 			const ipc = e as { message?: string };
 			errorMessage = ipc?.message ?? String(e);
+		}
+	}
+
+	async function saveModelPath() {
+		modelPathError = null;
+		try {
+			const trimmed = modelPathInput.trim();
+			effectiveModel = await setModelPath(trimmed.length > 0 ? trimmed : null);
+			modelPathInput = effectiveModel.is_default ? '' : effectiveModel.path;
+			announce(
+				effectiveModel.is_default
+					? 'Using default model path.'
+					: 'Custom model path saved.'
+			);
+		} catch (e) {
+			const ipc = e as { message?: string; code?: string };
+			modelPathError = ipc?.message ?? String(e);
+		}
+	}
+
+	async function useDefaultModelPath() {
+		modelPathError = null;
+		try {
+			effectiveModel = await setModelPath(null);
+			modelPathInput = '';
+			announce('Reverted to default model path.');
+		} catch (e) {
+			const ipc = e as { message?: string };
+			modelPathError = ipc?.message ?? String(e);
 		}
 	}
 
@@ -332,6 +384,63 @@
 					</li>
 				{/each}
 			</ul>
+		{/if}
+	</section>
+
+	<!-- ─── Voice & speech (M4-T9) ──────────────────────────────────────── -->
+	<section class="pn-settings__section" data-testid="voice-section">
+		<h2>Voice &amp; speech</h2>
+		{#if effectiveModel}
+			<div class="pn-settings__row">
+				<span>Model file</span>
+				<code class="pn-settings__path" data-testid="model-path-current"
+					>{effectiveModel.path}</code
+				>
+			</div>
+			{#if effectiveModel.is_default}
+				<p class="pn-settings__hint">
+					Default location. To use a different whisper.cpp model, paste an
+					absolute path to its <code>.bin</code> file below and click Save.
+				</p>
+			{:else}
+				<p class="pn-settings__hint">
+					Custom override in effect. Click <em>Use default</em> to revert.
+				</p>
+			{/if}
+
+			<div class="pn-settings__row">
+				<label for="model-path-input" class="sr-only">Custom model path</label>
+				<input
+					id="model-path-input"
+					type="text"
+					placeholder="/home/you/Downloads/ggml-large-v3.bin"
+					bind:value={modelPathInput}
+					data-testid="model-path-input"
+				/>
+				<button
+					type="button"
+					class="pn-btn"
+					onclick={saveModelPath}
+					data-testid="model-path-save"
+				>
+					Save
+				</button>
+				{#if !effectiveModel.is_default}
+					<button
+						type="button"
+						class="pn-btn pn-btn--ghost"
+						onclick={useDefaultModelPath}
+						data-testid="model-path-use-default"
+					>
+						Use default
+					</button>
+				{/if}
+			</div>
+			{#if modelPathError}
+				<p class="pn-empty pn-empty--error" data-testid="model-path-error">
+					{modelPathError}
+				</p>
+			{/if}
 		{/if}
 	</section>
 

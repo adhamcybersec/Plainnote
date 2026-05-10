@@ -5,6 +5,7 @@
 //! beyond the entry point. All real logic lives in `crate::core` and is
 //! unit-testable without launching a webview (ADR-003).
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
@@ -181,15 +182,22 @@ pub async fn start_recording(state: State<'_, AppState>) -> Result<(), IpcError>
 
     // Lazy-load whisper if not yet loaded. We do this *before* opening the
     // audio device so a model_missing error never leaves a half-open stream.
+    // Honors the user's override path (M4-T9) stored under meta key
+    // `whisper.model_path`; empty/missing falls back to default_model_path().
     {
         let mut slot = state.whisper.lock().map_err(|_| IpcError::locked())?;
         if slot.is_none() {
-            match WhisperEngine::from_default_model() {
+            let model_path = read_model_path_override(&state)?
+                .unwrap_or_else(crate::core::stt::default_model_path);
+            match WhisperEngine::from_model_file(&model_path) {
                 Ok(eng) => {
                     *slot = Some(Arc::new(eng));
                 }
                 Err(SttError::ModelMissing { path }) => {
                     return Err(IpcError::model_missing(path.to_string_lossy().into_owned()));
+                }
+                Err(SttError::NonUtf8ModelPath { .. }) => {
+                    return Err(IpcError::invalid("model path is not valid UTF-8"));
                 }
                 Err(other) => return Err(IpcError::stt(other.to_string())),
             }
@@ -298,6 +306,98 @@ pub fn get_transcription_state(state: State<'_, AppState>) -> Result<RecordingSt
         .lock()
         .map(|s| s.clone())
         .map_err(|_| IpcError::locked())
+}
+
+/// Meta key under which the optional whisper-model path override lives.
+/// Empty string / unset = no override; fall back to `default_model_path()`.
+const WHISPER_MODEL_PATH_KEY: &str = "whisper.model_path";
+
+/// Read the override path from `meta`. Returns `Ok(None)` when unset or
+/// stored as empty string; `Ok(Some(_))` otherwise. Mirrors the access
+/// pattern used by `get_meta` (no dedicated Index accessor exists).
+fn read_model_path_override(state: &State<'_, AppState>) -> Result<Option<PathBuf>, IpcError> {
+    let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    let stored: Option<String> = idx
+        .conn()
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            rusqlite::params![WHISPER_MODEL_PATH_KEY],
+            |row| row.get(0),
+        )
+        .ok();
+    Ok(stored.filter(|s| !s.is_empty()).map(PathBuf::from))
+}
+
+/// Resolved whisper-model path the engine will load on next start.
+/// `is_default = true` when no override is in effect (the path is the
+/// XDG-resolved default); `false` when the user set an override.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct EffectiveModelPathV1 {
+    pub path: String,
+    pub is_default: bool,
+}
+
+/// Returns the path the engine will load for the next recording, plus a
+/// flag the UI uses to decide whether to render a "Use default" button.
+#[tauri::command]
+pub fn get_effective_model_path(
+    state: State<'_, AppState>,
+) -> Result<EffectiveModelPathV1, IpcError> {
+    match read_model_path_override(&state)? {
+        Some(p) => Ok(EffectiveModelPathV1 {
+            path: p.to_string_lossy().into_owned(),
+            is_default: false,
+        }),
+        None => Ok(EffectiveModelPathV1 {
+            path: crate::core::stt::default_model_path()
+                .to_string_lossy()
+                .into_owned(),
+            is_default: true,
+        }),
+    }
+}
+
+/// Persist (or clear) the whisper-model path override.
+///
+/// `path = Some(non-empty)` validates that the path points to an existing
+/// regular file and stores it. `path = Some("")` or `None` clears the
+/// override. On success, drops the cached `WhisperEngine` so the next
+/// `start_recording` reloads from the new path.
+#[tauri::command]
+pub fn set_model_path(
+    path: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<EffectiveModelPathV1, IpcError> {
+    let trimmed = path.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let new_value: String = match trimmed {
+        Some(p) => {
+            let buf = PathBuf::from(p);
+            if !buf.is_file() {
+                return Err(IpcError::not_found(format!("not a file: {p}")));
+            }
+            p.to_string()
+        }
+        None => String::new(),
+    };
+
+    {
+        let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+        idx.conn()
+            .execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                rusqlite::params![WHISPER_MODEL_PATH_KEY, new_value],
+            )
+            .map_err(|e| IpcError::io(e.to_string()))?;
+    }
+
+    // Drop the cached engine so the next start_recording reloads.
+    {
+        let mut slot = state.whisper.lock().map_err(|_| IpcError::locked())?;
+        *slot = None;
+    }
+
+    get_effective_model_path(state)
 }
 
 /// Vault information surfaced in Settings: absolute path to the vault
@@ -930,6 +1030,17 @@ mod tests {
         })
         .unwrap();
         assert_eq!(s, r#"{"kind":"error","message":"x"}"#);
+    }
+
+    #[test]
+    fn effective_model_path_v1_serializes_with_snake_case_fields() {
+        // Pin the wire shape: frontend reads `is_default` (snake_case).
+        let s = serde_json::to_string(&EffectiveModelPathV1 {
+            path: "/x.bin".into(),
+            is_default: true,
+        })
+        .unwrap();
+        assert_eq!(s, r#"{"path":"/x.bin","is_default":true}"#);
     }
 
     #[test]

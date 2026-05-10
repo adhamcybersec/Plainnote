@@ -102,6 +102,8 @@ pub fn run() {
             commands::start_recording,
             commands::stop_recording_and_transcribe,
             commands::get_transcription_state,
+            commands::get_effective_model_path,
+            commands::set_model_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
