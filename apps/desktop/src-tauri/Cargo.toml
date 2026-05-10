@@ -31,6 +31,9 @@ rand = { version = "0.8", default-features = false }
 rand_chacha = { version = "0.3", default-features = false }
 notify-rust = { version = "4", default-features = false, features = ["d"] }
 
+# M4 voice/STT — see docs/plans/2026-05-07-v0.2-release.md
+zeroize = { version = "=1.8.1", features = ["derive"] }
+
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"
