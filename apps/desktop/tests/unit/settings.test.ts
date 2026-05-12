@@ -23,6 +23,14 @@ function makeTransport(handlers: Record<string, (args?: Record<string, unknown>)
 		list_reminders: () => [],
 		get_meta: () => null,
 		set_meta: () => null,
+		get_effective_model_path: () => ({
+			path: '/tmp/plainnote/models/ggml-base.en.bin',
+			is_default: true
+		}),
+		set_model_path: () => ({
+			path: '/tmp/plainnote/models/ggml-base.en.bin',
+			is_default: true
+		}),
 		...handlers
 	};
 	const t = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
@@ -251,6 +259,81 @@ describe('Settings page', () => {
 				'/home/x/Plainnote/vault'
 			);
 			expect(screen.getByTestId('vault-count').textContent).toBe('42');
+		});
+	});
+
+	// ─── Voice & speech section (M4-T9) ───────────────────────────────────
+
+	it('shows the default model path read-only when no override', async () => {
+		const { t } = makeTransport({
+			get_effective_model_path: () => ({
+				path: '/home/u/.local/share/plainnote/models/ggml-base.en.bin',
+				is_default: true
+			})
+		});
+		setIpcTransport(t);
+		render(SettingsPage);
+		await waitFor(() => {
+			const display = screen.getByTestId('model-path-current');
+			expect(display.textContent).toContain('ggml-base.en.bin');
+		});
+		expect(screen.queryByTestId('model-path-use-default')).toBeNull();
+	});
+
+	it('saves a custom model path override', async () => {
+		let savedPath: string | null = null;
+		const handlers: Record<string, (args?: Record<string, unknown>) => unknown> = {};
+		handlers.get_effective_model_path = () =>
+			savedPath
+				? { path: savedPath, is_default: false }
+				: { path: '/default.bin', is_default: true };
+		handlers.set_model_path = (args) => {
+			const incoming = (args as { path: string | null }).path;
+			savedPath = incoming && incoming.length > 0 ? incoming : null;
+			return savedPath
+				? { path: savedPath, is_default: false }
+				: { path: '/default.bin', is_default: true };
+		};
+		const { t } = makeTransport(handlers);
+		setIpcTransport(t);
+		const user = userEvent.setup();
+		render(SettingsPage);
+
+		await waitFor(() => screen.getByTestId('model-path-current'));
+		const input = screen.getByTestId('model-path-input') as HTMLInputElement;
+		await user.type(input, '/home/u/custom.bin');
+		await user.click(screen.getByTestId('model-path-save'));
+
+		await waitFor(() => {
+			expect(screen.getByTestId('model-path-current').textContent).toContain('custom.bin');
+		});
+		expect(screen.getByTestId('model-path-use-default')).toBeInTheDocument();
+	});
+
+	it('reverts to default when "Use default" is clicked', async () => {
+		let savedPath: string | null = '/home/u/custom.bin';
+		const handlers: Record<string, (args?: Record<string, unknown>) => unknown> = {};
+		handlers.get_effective_model_path = () =>
+			savedPath
+				? { path: savedPath, is_default: false }
+				: { path: '/default.bin', is_default: true };
+		handlers.set_model_path = (args) => {
+			const incoming = (args as { path: string | null }).path;
+			savedPath = incoming && incoming.length > 0 ? incoming : null;
+			return savedPath
+				? { path: savedPath, is_default: false }
+				: { path: '/default.bin', is_default: true };
+		};
+		const { t } = makeTransport(handlers);
+		setIpcTransport(t);
+		const user = userEvent.setup();
+		render(SettingsPage);
+
+		await waitFor(() => screen.getByTestId('model-path-use-default'));
+		await user.click(screen.getByTestId('model-path-use-default'));
+		await waitFor(() => {
+			expect(screen.getByTestId('model-path-current').textContent).toContain('default.bin');
+			expect(screen.queryByTestId('model-path-use-default')).toBeNull();
 		});
 	});
 

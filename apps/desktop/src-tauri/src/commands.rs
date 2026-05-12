@@ -5,16 +5,37 @@
 //! beyond the entry point. All real logic lives in `crate::core` and is
 //! unit-testable without launching a webview (ADR-003).
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
+use crate::audio_backend::CpalHost;
+use crate::core::audio::{self, AudioError, CaptureSession};
 use crate::core::graph;
 use crate::core::ids::NoteId;
 use crate::core::index::Index;
 use crate::core::query::{self, QueryMode};
 use crate::core::reminder_scheduler::Wake;
 use crate::core::reminders::{self, ReminderFilter};
+use crate::core::stt::{SttError, WhisperEngine};
 use crate::core::vault::{NoteSummary, Vault};
+
+/// Coarse user-facing state machine surfaced to the frontend via
+/// `get_transcription_state` (M4-T7 RecordingIndicator polls this).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RecordingState {
+    Idle,
+    Recording {
+        /// Unix epoch ms; the UI computes elapsed locally.
+        started_at_ms: u64,
+    },
+    Transcribing,
+    Error {
+        message: String,
+    },
+}
 
 /// Application state shared across Tauri commands.
 pub struct AppState {
@@ -24,6 +45,18 @@ pub struct AppState {
     /// created/cancelled. Optional so tests that build AppState by hand
     /// don't need to spin up the scheduler.
     pub reminder_wake: Option<tokio::sync::mpsc::UnboundedSender<Wake>>,
+    // ─── M4 voice ───
+    /// Loaded whisper engine. None until the user supplies a model file at
+    /// the resolved default path (or via Settings); set on first successful
+    /// load. Wrapped in Mutex<Option<...>> so M4-T9's Settings UI can swap
+    /// it without restarting the app.
+    pub whisper: Arc<Mutex<Option<Arc<WhisperEngine>>>>,
+    /// In-flight capture session. Some(session) between start_recording and
+    /// stop_recording_and_transcribe. None at all other times.
+    pub capture: Arc<Mutex<Option<CaptureSession>>>,
+    /// Coarse user-facing state machine; the frontend polls this for the
+    /// RecordingIndicator (M4-T7).
+    pub rec_state: Arc<Mutex<RecordingState>>,
 }
 
 /// Versioned wire types. Bumping a struct version is part of the IPC
@@ -92,6 +125,279 @@ impl IpcError {
             message: "could not acquire index lock".into(),
         }
     }
+    /// First-run UX: model file is not yet at the resolved default path
+    /// (M4-T11 will use this code to show a download prompt). The `message`
+    /// carries the path so the prompt can render it.
+    fn model_missing(path: impl Into<String>) -> Self {
+        Self {
+            code: "model_missing",
+            message: path.into(),
+        }
+    }
+    fn no_input_device() -> Self {
+        Self {
+            code: "no_input_device",
+            message: "no default audio input device".into(),
+        }
+    }
+    fn audio(message: impl Into<String>) -> Self {
+        Self {
+            code: "audio",
+            message: message.into(),
+        }
+    }
+    fn stt(message: impl Into<String>) -> Self {
+        Self {
+            code: "stt",
+            message: message.into(),
+        }
+    }
+}
+
+fn now_ms() -> Result<u64, IpcError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .map_err(|_| IpcError::invalid("system clock invalid (before unix epoch)"))
+}
+
+// ─── M4 voice commands ─────────────────────────────────────────────────────
+
+/// Begin a recording. Lazy-loads `WhisperEngine` from the default model path
+/// the first time it's called (so a user without the model only hits the
+/// error here, not at app startup). Captures over `CpalHost` at the host's
+/// preferred config; downmix + resample happen in `stop_recording_and_transcribe`.
+///
+/// Capacity cap: 300 s. At 44.1 kHz × 2 ch × 4 bytes = ~105 MB pre-allocated;
+/// acceptable for a voice-memo use case and far below any RAM ceiling on
+/// modern desktops. See ADR-010 / M4-T6 plan note.
+#[tauri::command]
+pub async fn start_recording(state: State<'_, AppState>) -> Result<(), IpcError> {
+    {
+        let rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+        if !matches!(*rec, RecordingState::Idle | RecordingState::Error { .. }) {
+            return Err(IpcError::invalid("already recording or transcribing"));
+        }
+    }
+
+    // Lazy-load whisper if not yet loaded. We do this *before* opening the
+    // audio device so a model_missing error never leaves a half-open stream.
+    // Honors the user's override path (M4-T9) stored under meta key
+    // `whisper.model_path`; empty/missing falls back to default_model_path().
+    {
+        let mut slot = state.whisper.lock().map_err(|_| IpcError::locked())?;
+        if slot.is_none() {
+            let model_path = read_model_path_override(&state)?
+                .unwrap_or_else(crate::core::stt::default_model_path);
+            match WhisperEngine::from_model_file(&model_path) {
+                Ok(eng) => {
+                    *slot = Some(Arc::new(eng));
+                }
+                Err(SttError::ModelMissing { path }) => {
+                    return Err(IpcError::model_missing(path.to_string_lossy().into_owned()));
+                }
+                Err(SttError::NonUtf8ModelPath { .. }) => {
+                    return Err(IpcError::invalid("model path is not valid UTF-8"));
+                }
+                Err(other) => return Err(IpcError::stt(other.to_string())),
+            }
+        }
+    }
+
+    // Hard cap: 5 minutes. See module note above.
+    const MAX_SECONDS: f32 = 300.0;
+    let host = CpalHost::new();
+    let session = audio::start_capture(&host, MAX_SECONDS).map_err(|e| match e {
+        AudioError::NoInputDevice => IpcError::no_input_device(),
+        other => IpcError::audio(other.to_string()),
+    })?;
+
+    {
+        let mut slot = state.capture.lock().map_err(|_| IpcError::locked())?;
+        *slot = Some(session);
+    }
+    {
+        let mut rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+        *rec = RecordingState::Recording {
+            started_at_ms: now_ms()?,
+        };
+    }
+    Ok(())
+}
+
+/// Stop the active session, downmix + resample, run whisper inference on a
+/// blocking task pool (per ADR-010 / ADR-008), return the transcript.
+///
+/// On error, leaves `rec_state` as `Error { message }` so the UI can surface
+/// it; the next `start_recording` resets to `Idle`.
+#[tauri::command]
+pub async fn stop_recording_and_transcribe(state: State<'_, AppState>) -> Result<String, IpcError> {
+    // Confirm we're actually recording.
+    {
+        let rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+        if !matches!(*rec, RecordingState::Recording { .. }) {
+            return Err(IpcError::invalid("not recording"));
+        }
+    }
+
+    // Take the session out of state so we own it for the drain.
+    let session = {
+        let mut slot = state.capture.lock().map_err(|_| IpcError::locked())?;
+        slot.take()
+    };
+    let session = session.ok_or_else(|| IpcError::invalid("no active capture session"))?;
+
+    let drained = match session.stop_and_drain() {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = e.to_string();
+            let mut rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+            *rec = RecordingState::Error {
+                message: msg.clone(),
+            };
+            return Err(IpcError::audio(msg));
+        }
+    };
+
+    // Flip to Transcribing for the duration of the inference call.
+    {
+        let mut rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+        *rec = RecordingState::Transcribing;
+    }
+
+    // Clone Arc<WhisperEngine> so we can move it into the blocking task.
+    let engine: Arc<WhisperEngine> = {
+        let slot = state.whisper.lock().map_err(|_| IpcError::locked())?;
+        slot.as_ref().cloned().ok_or_else(|| {
+            IpcError::stt("whisper engine missing — start_recording should have loaded it")
+        })?
+    };
+
+    let pcm16k = audio::to_whisper_format(&drained.samples, &drained.config);
+
+    // Whisper inference is CPU-heavy and synchronous; run it on the blocking
+    // pool so it doesn't starve the IPC runtime. ADR-010 / ADR-008.
+    let transcript_res = tauri::async_runtime::spawn_blocking(move || engine.transcribe(&pcm16k))
+        .await
+        .map_err(|e| IpcError::stt(format!("blocking task join error: {e}")))?;
+
+    match transcript_res {
+        Ok(text) => {
+            let mut rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+            *rec = RecordingState::Idle;
+            Ok(text)
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let mut rec = state.rec_state.lock().map_err(|_| IpcError::locked())?;
+            *rec = RecordingState::Error {
+                message: msg.clone(),
+            };
+            Err(IpcError::stt(msg))
+        }
+    }
+}
+
+/// UI poll endpoint (~100 ms while recording). Synchronous getter.
+#[tauri::command]
+pub fn get_transcription_state(state: State<'_, AppState>) -> Result<RecordingState, IpcError> {
+    state
+        .rec_state
+        .lock()
+        .map(|s| s.clone())
+        .map_err(|_| IpcError::locked())
+}
+
+/// Meta key under which the optional whisper-model path override lives.
+/// Empty string / unset = no override; fall back to `default_model_path()`.
+const WHISPER_MODEL_PATH_KEY: &str = "whisper.model_path";
+
+/// Read the override path from `meta`. Returns `Ok(None)` when unset or
+/// stored as empty string; `Ok(Some(_))` otherwise. Mirrors the access
+/// pattern used by `get_meta` (no dedicated Index accessor exists).
+fn read_model_path_override(state: &State<'_, AppState>) -> Result<Option<PathBuf>, IpcError> {
+    let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+    let stored: Option<String> = idx
+        .conn()
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            rusqlite::params![WHISPER_MODEL_PATH_KEY],
+            |row| row.get(0),
+        )
+        .ok();
+    Ok(stored.filter(|s| !s.is_empty()).map(PathBuf::from))
+}
+
+/// Resolved whisper-model path the engine will load on next start.
+/// `is_default = true` when no override is in effect (the path is the
+/// XDG-resolved default); `false` when the user set an override.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct EffectiveModelPathV1 {
+    pub path: String,
+    pub is_default: bool,
+}
+
+/// Returns the path the engine will load for the next recording, plus a
+/// flag the UI uses to decide whether to render a "Use default" button.
+#[tauri::command]
+pub fn get_effective_model_path(
+    state: State<'_, AppState>,
+) -> Result<EffectiveModelPathV1, IpcError> {
+    match read_model_path_override(&state)? {
+        Some(p) => Ok(EffectiveModelPathV1 {
+            path: p.to_string_lossy().into_owned(),
+            is_default: false,
+        }),
+        None => Ok(EffectiveModelPathV1 {
+            path: crate::core::stt::default_model_path()
+                .to_string_lossy()
+                .into_owned(),
+            is_default: true,
+        }),
+    }
+}
+
+/// Persist (or clear) the whisper-model path override.
+///
+/// `path = Some(non-empty)` validates that the path points to an existing
+/// regular file and stores it. `path = Some("")` or `None` clears the
+/// override. On success, drops the cached `WhisperEngine` so the next
+/// `start_recording` reloads from the new path.
+#[tauri::command]
+pub fn set_model_path(
+    path: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<EffectiveModelPathV1, IpcError> {
+    let trimmed = path.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let new_value: String = match trimmed {
+        Some(p) => {
+            let buf = PathBuf::from(p);
+            if !buf.is_file() {
+                return Err(IpcError::not_found(format!("not a file: {p}")));
+            }
+            p.to_string()
+        }
+        None => String::new(),
+    };
+
+    {
+        let idx = state.index.lock().map_err(|_| IpcError::locked())?;
+        idx.conn()
+            .execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                rusqlite::params![WHISPER_MODEL_PATH_KEY, new_value],
+            )
+            .map_err(|e| IpcError::io(e.to_string()))?;
+    }
+
+    // Drop the cached engine so the next start_recording reloads.
+    {
+        let mut slot = state.whisper.lock().map_err(|_| IpcError::locked())?;
+        *slot = None;
+    }
+
+    get_effective_model_path(state)
 }
 
 /// Vault information surfaced in Settings: absolute path to the vault
@@ -706,6 +1012,35 @@ mod tests {
         assert_eq!(json["source_title"], "Source");
         assert_eq!(json["source_preview"], "preview");
         assert_eq!(json["raw"], "[[Target]]");
+    }
+
+    #[test]
+    fn recording_state_serializes_with_kind_tag() {
+        let s = serde_json::to_string(&RecordingState::Idle).unwrap();
+        assert_eq!(s, r#"{"kind":"idle"}"#);
+        let s = serde_json::to_string(&RecordingState::Recording {
+            started_at_ms: 1234,
+        })
+        .unwrap();
+        assert_eq!(s, r#"{"kind":"recording","started_at_ms":1234}"#);
+        let s = serde_json::to_string(&RecordingState::Transcribing).unwrap();
+        assert_eq!(s, r#"{"kind":"transcribing"}"#);
+        let s = serde_json::to_string(&RecordingState::Error {
+            message: "x".into(),
+        })
+        .unwrap();
+        assert_eq!(s, r#"{"kind":"error","message":"x"}"#);
+    }
+
+    #[test]
+    fn effective_model_path_v1_serializes_with_snake_case_fields() {
+        // Pin the wire shape: frontend reads `is_default` (snake_case).
+        let s = serde_json::to_string(&EffectiveModelPathV1 {
+            path: "/x.bin".into(),
+            is_default: true,
+        })
+        .unwrap();
+        assert_eq!(s, r#"{"path":"/x.bin","is_default":true}"#);
     }
 
     #[test]

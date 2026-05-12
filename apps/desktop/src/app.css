@@ -51,6 +51,19 @@ body {
 	color: var(--ink);
 }
 
+/* Tailwind 4's preflight strips text color inheritance on monospace
+ * elements (code/kbd/samp). Without an explicit rule the WebKit2GTK
+ * runtime renders them as the UA default (often pure white on Linux
+ * Tauri), producing low-contrast text. Set the inherited ink color
+ * back. This applies to every <code> in the app; specific components
+ * that need a different color can override locally. */
+code,
+kbd,
+samp,
+pre {
+	color: var(--ink);
+}
+
 /* ─── Capture (M1a R4 zero-friction) ─── */
 
 .pn-capture {

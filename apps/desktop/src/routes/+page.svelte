@@ -1,15 +1,22 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!--
   Capture screen (R4 zero-friction).
-  One textarea, one primary action (Save), two disabled placeholders
-  (Record / Attach — voice and attachments arrive in v0.2 / M3).
+  One textarea, one primary action (Save), Attach disabled (M3+),
+  Record voice wired to the M4 STT pipeline (M4-T8).
   Cmd+Enter / Ctrl+Enter saves. Esc does nothing — the user must
   never lose typed input by accident.
 -->
 <script lang="ts">
-	import { saveNote } from '$lib/ipc';
+	import {
+		saveNote,
+		startRecording,
+		stopRecordingAndTranscribe,
+		type RecordingState
+	} from '$lib/ipc';
 	import type { IpcError } from '$lib/ipc';
 	import { announce } from '$lib/status';
+	import RecordingIndicator from '$lib/components/RecordingIndicator.svelte';
+	import ModelMissingDialog from '$lib/components/ModelMissingDialog.svelte';
 
 	let body = $state('');
 	let saving = $state(false);
@@ -17,6 +24,12 @@
 	let errorMessage = $state<string | null>(null);
 	let textarea: HTMLTextAreaElement | undefined = $state();
 	let savedTimer: ReturnType<typeof setTimeout> | null = null;
+
+	let recState = $state<RecordingState>({ kind: 'idle' });
+	// Parallel to recState — only meaningful when recState.kind === 'error'.
+	// Tracked separately so the page can branch on the IPC error code without
+	// changing RecordingIndicator's wire-type prop. See M4-T11.
+	let lastErrorCode = $state<string | null>(null);
 
 	async function save() {
 		const trimmed = body.trim();
@@ -49,6 +62,65 @@
 			void save();
 		}
 	}
+
+	async function startRecord() {
+		if (recState.kind !== 'idle' && recState.kind !== 'error') return;
+		try {
+			await startRecording();
+			recState = { kind: 'recording', started_at_ms: Date.now() };
+			lastErrorCode = null;
+			announce('Recording started.');
+		} catch (e) {
+			const ipc = e as Partial<IpcError>;
+			lastErrorCode = ipc?.code ?? null;
+			recState = { kind: 'error', message: ipc?.message ?? String(e) };
+			announce(`Recording failed: ${ipc?.message ?? 'unknown'}`);
+		}
+	}
+
+	async function stopRecord() {
+		if (recState.kind !== 'recording') return;
+		recState = { kind: 'transcribing' };
+		announce('Transcribing…');
+		try {
+			const transcript = await stopRecordingAndTranscribe();
+			insertTranscriptAtCursor(transcript);
+			recState = { kind: 'idle' };
+			lastErrorCode = null;
+			announce('Transcript inserted.');
+		} catch (e) {
+			const ipc = e as Partial<IpcError>;
+			lastErrorCode = ipc?.code ?? null;
+			recState = { kind: 'error', message: ipc?.message ?? String(e) };
+			announce(`Transcription failed: ${ipc?.message ?? 'unknown'}`);
+		}
+	}
+
+	function dismissRecError() {
+		if (recState.kind === 'error') {
+			recState = { kind: 'idle' };
+			lastErrorCode = null;
+		}
+	}
+
+	function insertTranscriptAtCursor(transcript: string) {
+		const ta = textarea;
+		if (!ta) {
+			body = body.length === 0 ? transcript : `${body}\n${transcript}`;
+			return;
+		}
+		const start = ta.selectionStart ?? body.length;
+		const end = ta.selectionEnd ?? body.length;
+		const before = body.slice(0, start);
+		const after = body.slice(end);
+		const padded = before.length > 0 && !/\s$/.test(before) ? ` ${transcript}` : transcript;
+		body = before + padded + after;
+		queueMicrotask(() => {
+			ta.focus();
+			const newCaret = before.length + padded.length;
+			ta.setSelectionRange(newCaret, newCaret);
+		});
+	}
 </script>
 
 <main class="pn-capture">
@@ -66,9 +138,16 @@
 		></textarea>
 
 		<div class="pn-capture__actions">
-			<button class="pn-btn pn-btn--ghost" type="button" disabled aria-disabled="true">
-				<span aria-hidden="true">●</span> Record voice
-			</button>
+			{#if recState.kind === 'idle' || recState.kind === 'error'}
+				<button
+					class="pn-btn pn-btn--ghost"
+					type="button"
+					onclick={startRecord}
+					data-testid="record-button"
+				>
+					<span aria-hidden="true">●</span> Record voice
+				</button>
+			{/if}
 			<button class="pn-btn pn-btn--ghost" type="button" disabled aria-disabled="true">
 				<span aria-hidden="true">▣</span> Attach file
 			</button>
@@ -76,10 +155,41 @@
 				class="pn-btn pn-btn--primary"
 				type="button"
 				onclick={save}
-				disabled={saving || body.trim() === ''}
+				disabled={saving ||
+					body.trim() === '' ||
+					recState.kind === 'recording' ||
+					recState.kind === 'transcribing'}
 				data-testid="save-button">Save</button
 			>
 		</div>
+
+		<!--
+			When the model-missing dialog is up, force the indicator to idle so
+			the user sees exactly one error surface. Other error codes
+			(no_input_device, audio, stt) still flow through the indicator chip.
+		-->
+		<RecordingIndicator
+			state={recState.kind === 'error' && lastErrorCode === 'model_missing'
+				? { kind: 'idle' }
+				: recState}
+			onStop={stopRecord}
+			onDismiss={dismissRecError}
+		/>
+
+		{#if recState.kind === 'error' && lastErrorCode === 'model_missing'}
+			<ModelMissingDialog
+				expectedPath={recState.message}
+				onRetry={async () => {
+					recState = { kind: 'idle' };
+					lastErrorCode = null;
+					await startRecord();
+				}}
+				onCancel={() => {
+					recState = { kind: 'idle' };
+					lastErrorCode = null;
+				}}
+			/>
+		{/if}
 
 		<div class="pn-capture__hint">
 			Press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to save · Tags can be added later.
